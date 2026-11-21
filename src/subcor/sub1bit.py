@@ -259,7 +259,8 @@ def factorize_sub1bit(
     if rank <= 0 or rank > min(d_out, d_in):
         raise ValueError(f"rank must be in [1, {min(d_out, d_in)}], got {rank}")
 
-    if float(np.linalg.norm(w)) < eps:
+    global_rms = float(np.sqrt(np.mean(w * w)))
+    if global_rms < 1e-15 or float(np.linalg.norm(w)) < eps:
         u_ones = np.ones((d_out, rank), dtype=np.float64)
         v_ones = np.ones((d_in, rank), dtype=np.float64)
         return Sub1BitMatrix(
@@ -273,9 +274,13 @@ def factorize_sub1bit(
             v_packed=_pack_pm1(v_ones),
         )
 
+    # Normalize to unit global RMS so internal sweeps are strictly scale-invariant
+    # (prevents eps from distorting small ~1e-6 LoRA deltas).
+    w_unit = w / global_rms
+
     # Initial row/col RMS normalization makes binary factors well-conditioned.
-    row_rms = np.sqrt(np.mean(w * w, axis=1) + eps)
-    w_row_norm = w / row_rms[:, np.newaxis]
+    row_rms = np.sqrt(np.mean(w_unit * w_unit, axis=1) + eps)
+    w_row_norm = w_unit / row_rms[:, np.newaxis]
     col_rms = np.sqrt(np.mean(w_row_norm * w_row_norm, axis=0) + eps)
     w_norm = w_row_norm / col_rms[np.newaxis, :]
 
@@ -301,7 +306,7 @@ def factorize_sub1bit(
         for k in range(rank):
             core_without_k = core - sigma[k] * np.outer(u[:, k], v[:, k])
             approx_without_k = (s1[:, np.newaxis] * core_without_k) * s2[np.newaxis, :]
-            err = w - approx_without_k
+            err = w_unit - approx_without_k
             # Weighted objective: minimize ||err - s1 * sigma_k * (u_k v_k^T) * s2^T||_F^2
             # Equivalent to maximizing (u_k * s1)^T err (v_k * s2) up to scale.
             uk = u[:, k]
@@ -322,12 +327,12 @@ def factorize_sub1bit(
         # 2. Closed-form least-squares update for row scaling s1.
         m_col = core * s2[np.newaxis, :]
         denom_s1 = np.sum(m_col * m_col, axis=1)
-        s1 = np.where(denom_s1 > eps, np.sum(w * m_col, axis=1) / (denom_s1 + eps), 0.0)
+        s1 = np.where(denom_s1 > eps, np.sum(w_unit * m_col, axis=1) / (denom_s1 + eps), 0.0)
 
         # 3. Closed-form least-squares update for column scaling s2.
         m_row = s1[:, np.newaxis] * core
         denom_s2 = np.sum(m_row * m_row, axis=0)
-        s2 = np.where(denom_s2 > eps, np.sum(w * m_row, axis=0) / (denom_s2 + eps), 0.0)
+        s2 = np.where(denom_s2 > eps, np.sum(w_unit * m_row, axis=0) / (denom_s2 + eps), 0.0)
 
         # Re-normalize scales into balanced magnitude to avoid float16 overflow/underflow.
         s1_norm = float(np.sqrt(np.mean(s1 * s1) + eps))
@@ -337,10 +342,20 @@ def factorize_sub1bit(
             s2 = s2 / s2_norm
             sigma = sigma * (s1_norm * s2_norm)
 
-    # Guard float16 finite range by absorbing global scale cleanly across s1, s2, sigma.
+    # Restore original global magnitude before float16 scale balancing.
+    sigma = sigma * global_rms
+
+    # Guard float16 finite & normal range (avoid both overflow > 6.55e4 and denormal
+    # underflow < 6.1e-5) by balancing global magnitude across s1, s2, and sigma.
     max_sigma = float(np.max(np.abs(sigma)))
     if max_sigma > 1e3:
         factor = math.sqrt(max_sigma / 10.0)
+        sigma = sigma / (factor * factor)
+        s1 = s1 * factor
+        s2 = s2 * factor
+    elif 0.0 < max_sigma < 1e-2:
+        # Spread tiny delta scale symmetrically across s1 and s2 while keeping them normal in fp16.
+        factor = max(math.sqrt(max_sigma), 5e-4)
         sigma = sigma / (factor * factor)
         s1 = s1 * factor
         s2 = s2 * factor
