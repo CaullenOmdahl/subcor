@@ -319,6 +319,16 @@ def _resolve_parent_and_attr(model: nn.Module, dotted_path: str) -> tuple[Any, s
     return obj, parts[-1]
 
 
+def _detect_layer_prefix(model: nn.Module) -> str:
+    """Detect the exact mlx-lm parameter prefix preceding `layers.<idx>...` (e.g. `language_model.model.`)."""
+    for key, _ in tree_flatten(model.parameters()):
+        marker = "layers.0."
+        pos = key.find(marker)
+        if pos != -1:
+            return key[:pos]
+    return "model."
+
+
 class MLXKernel:
     """Frozen Apple Silicon quantized base model with governed hot-swap Skill Units."""
 
@@ -328,25 +338,40 @@ class MLXKernel:
         *,
         target_layer_indices: list[int] | None = None,
         projection_attr: str = "mlp.down_proj",
+        target_projections: tuple[str, ...] | None = None,
     ) -> None:
         self.model_id = model_id
         self.model, self.tokenizer = load(model_id)
         self.model.freeze()
+        self.layer_prefix: str = _detect_layer_prefix(self.model)
 
         num_layers = len(self.model.layers)
+        self.total_layers: int = num_layers
         if target_layer_indices is None:
             # Default: compact set covering middle + upper layers (including MIT Exp 8's 15 & 19).
             candidates = [7, 11, 15, 19, num_layers - 3, num_layers - 2, num_layers - 1]
             target_layer_indices = sorted({i for i in candidates if 0 <= i < num_layers})
 
+        projections = target_projections if target_projections is not None else (projection_attr,)
         self.instrumented: dict[str, SubcorMLXLinear] = {}
         for idx in target_layer_indices:
-            dotted = f"layers.{idx}.{projection_attr}"
-            parent, attr = _resolve_parent_and_attr(self.model, dotted)
-            base_mod = getattr(parent, attr)
-            wrapped = SubcorMLXLinear(base_mod, layer_name=dotted)
-            setattr(parent, attr, wrapped)
-            self.instrumented[dotted] = wrapped
+            for proj in projections:
+                dotted = f"layers.{idx}.{proj}"
+                try:
+                    parent, attr = _resolve_parent_and_attr(self.model, dotted)
+                    base_mod = getattr(parent, attr)
+                except (AttributeError, IndexError, KeyError):
+                    # Hybrid architectures (e.g. Qwen3.5 GatedDeltaNet) omit self_attn on linear layers.
+                    continue
+                wrapped = SubcorMLXLinear(base_mod, layer_name=dotted)
+                setattr(parent, attr, wrapped)
+                self.instrumented[dotted] = wrapped
+
+        if not self.instrumented:
+            raise ValueError(
+                f"No target projections matched on '{model_id}' for layers={target_layer_indices} "
+                f"and projections={projections}"
+            )
 
         self._greedy_sampler = make_sampler(temp=0.0)
         self._verified_unit_cache: dict[str, tuple[str, list[tuple[str, LowRankAdapter]]]] = {}
@@ -816,8 +841,8 @@ class MLXKernel:
 
         # Freeze entire model, then attach zero-initialized FP32 LoRA branches.
         # When binary_ste=True, we run Two-Stage QAT:
-        #   Stage 1 (~65% steps): FP32 warm-start for seed-stable basin discovery
-        #   Stage 2 (~35% steps): Convert to Sub1Bit Binary STE and refine around {-1, +1}
+        #   Stage 1 (70% steps): FP32 warm-start for seed-stable basin discovery
+        #   Stage 2 (30% steps): Convert to Sub1Bit Binary STE and refine around {-1, +1}
         self.model.freeze()
         for idx, name in enumerate(layer_names):
             layer = self.instrumented[name]
@@ -945,33 +970,62 @@ def export_mlx_lora_safetensors(
     unit_id: str,
     registry: SkillUnitRegistry,
     destination_dir: Path,
+    *,
+    model: nn.Module | None = None,
+    layer_prefix: str | None = None,
+    total_layers: int | None = None,
 ) -> Path:
-    """Export a verified Skill Unit as stock mlx-lm adapters.safetensors + adapter_config.json."""
+    """Export a verified Skill Unit as stock mlx-lm adapters.safetensors + adapter_config.json.
+
+    Detects the exact model key prefix (e.g. `language_model.model.` on Qwen3.5 or
+    `model.` on standard Llama/Gemma) and sets `num_layers` to match mlx-lm's
+    last-N-layers convention so `mlx_lm.load(model_id, adapter_path=...)` works natively.
+    """
     manifest = registry.get_manifest(unit_id)
     deltas: list[LayerDeltaPayload] = registry.load_verified_deltas(unit_id)
+
+    resolved_prefix = (
+        layer_prefix
+        if layer_prefix is not None
+        else (_detect_layer_prefix(model) if model is not None else "model.")
+    )
+    resolved_total_layers = (
+        total_layers
+        if total_layers is not None
+        else (len(model.layers) if model is not None and hasattr(model, "layers") else None)
+    )
 
     destination_dir.mkdir(parents=True, exist_ok=True)
     tensors: dict[str, mx.array] = {}
     ranks: set[int] = set()
     keys: set[str] = set()
+    layer_indices: list[int] = []
 
     for delta in deltas:
         adapter = delta.to_adapter(adapter_name=delta.layer_name)
         ranks.add(adapter.rank)
-        # mlx-lm adapter naming: model.<layer_path>.lora_a (d_in, r), .lora_b (r, d_out)
-        prefix = f"model.{delta.layer_name}"
+        # mlx-lm adapter naming: <layer_prefix><layer_path>.lora_a (d_in, r), .lora_b (r, d_out)
+        prefix = f"{resolved_prefix}{delta.layer_name}"
         tensors[f"{prefix}.lora_a"] = mx.array(adapter.a.T.astype(np.float16))
         tensors[f"{prefix}.lora_b"] = mx.array((adapter.scale * adapter.b).T.astype(np.float16))
         parts = delta.layer_name.split(".")
+        if len(parts) >= 2 and parts[0] == "layers" and parts[1].isdigit():
+            layer_indices.append(int(parts[1]))
         if len(parts) >= 3:
             keys.add(".".join(parts[2:]))
 
     safetensors_path = destination_dir / "adapters.safetensors"
     mx.save_safetensors(str(safetensors_path), tensors)
 
+    # mlx-lm interprets num_layers as "the last N layers" (or -1 for all layers).
+    if resolved_total_layers is not None and layer_indices:
+        num_layers = resolved_total_layers - min(layer_indices)
+    else:
+        num_layers = -1
+
     config = {
         "fine_tune_type": "lora",
-        "num_layers": len(deltas),
+        "num_layers": num_layers,
         "lora_parameters": {
             "rank": max(ranks) if ranks else 1,
             "scale": 1.0,
@@ -981,6 +1035,7 @@ def export_mlx_lora_safetensors(
         "subcor_unit": {
             "unit_id": manifest.unit_id,
             "version": manifest.version,
+            "base_kernel_id": manifest.base_kernel_id,
             "payload_sha256": manifest.payload_sha256,
             "effective_bits_per_weight": round(manifest.effective_bits_per_weight, 6),
         },

@@ -168,13 +168,18 @@ class MLXServingAdapter:
         model_id: str = "mlx-community/Qwen3.5-0.8B-4bit",
         *,
         target_layer_indices: list[int] | None = None,
+        target_projections: tuple[str, ...] | None = None,
     ) -> None:
         from subcor.backends.mlx_kernel import MLXKernel
 
         indices = (
             target_layer_indices if target_layer_indices is not None else [18, 19, 20, 21, 22, 23]
         )
-        self._kernel = MLXKernel(model_id=model_id, target_layer_indices=indices)
+        self._kernel = MLXKernel(
+            model_id=model_id,
+            target_layer_indices=indices,
+            target_projections=target_projections,
+        )
         self.model_id = model_id
         self.target_layers = tuple(sorted(self._kernel.instrumented.keys(), key=_layer_sort_key))
         self.tap_layer = self.target_layers[0]
