@@ -131,9 +131,14 @@ def _coerce_param_value(raw: str) -> Any:
     val = raw.strip()
     if not val:
         return ""
-    if val in ("true", "false", "null") or (
-        (val.startswith("{") and val.endswith("}")) or (val.startswith("[") and val.endswith("]"))
-    ):
+    low = val.lower()
+    if low == "true":
+        return True
+    if low == "false":
+        return False
+    if low in ("null", "none"):
+        return None
+    if (val.startswith("{") and val.endswith("}")) or (val.startswith("[") and val.endswith("]")):
         try:
             return json.loads(val)
         except json.JSONDecodeError:

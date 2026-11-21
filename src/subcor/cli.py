@@ -367,6 +367,34 @@ def _run_bench_cli(args: argparse.Namespace) -> int:
         print(json.dumps(report, indent=2))
         return 0
 
+    if args.bench_cmd == "bfcl":
+        from subcor.bfcl import run_bfcl_poc
+
+        cats = tuple(c.strip() for c in args.categories.split(",") if c.strip())
+        projs = tuple(p.strip() for p in args.projections.split(",") if p.strip())
+        with tempfile.TemporaryDirectory(prefix="subcor-bfcl-") as tmp:
+            wdir = args.work_dir.expanduser().resolve() if args.work_dir else Path(tmp)
+            report = run_bfcl_poc(
+                work_dir=wdir,
+                model_id=args.model,
+                categories=cats,
+                max_per_category=args.max_per_category,
+                n_single=args.n_single,
+                n_parallel=args.n_parallel,
+                n_abstain=args.n_abstain,
+                rank=args.rank,
+                steps=args.steps,
+                lr=args.lr,
+                num_adapted_layers=args.num_layers,
+                projections=projs,
+                seed=args.seed,
+            )
+        if args.out is not None:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(report, indent=2))
+        return 0
+
     ledger = BenchmarkLedger(args.ledger.expanduser().resolve())
 
     if args.bench_cmd == "run":
@@ -693,6 +721,29 @@ def main(argv: list[str] | None = None) -> int:
     b_base.add_argument("--steps", type=int, default=80)
     b_base.add_argument("--seed", type=int, default=42)
     b_base.add_argument("--out", type=Path, default=None)
+
+    b_bfcl = bench_sub.add_parser(
+        "bfcl",
+        help="Run the official Berkeley Function Calling Leaderboard (BFCL v3) PoC on MLX.",
+    )
+    b_bfcl.add_argument("--model", type=str, default="mlx-community/Qwen3.5-4B-4bit")
+    b_bfcl.add_argument(
+        "--categories",
+        type=str,
+        default="simple,multiple,parallel,irrelevance",
+    )
+    b_bfcl.add_argument("--max-per-category", type=int, default=50)
+    b_bfcl.add_argument("--n-single", type=int, default=35)
+    b_bfcl.add_argument("--n-parallel", type=int, default=35)
+    b_bfcl.add_argument("--n-abstain", type=int, default=30)
+    b_bfcl.add_argument("--rank", type=int, default=16)
+    b_bfcl.add_argument("--steps", type=int, default=120)
+    b_bfcl.add_argument("--lr", type=float, default=2e-4)
+    b_bfcl.add_argument("--num-layers", type=int, default=8)
+    b_bfcl.add_argument("--projections", type=str, default="mlp.down_proj,self_attn.o_proj")
+    b_bfcl.add_argument("--work-dir", type=Path, default=None)
+    b_bfcl.add_argument("--seed", type=int, default=42)
+    b_bfcl.add_argument("--out", type=Path, default=None)
 
     b_exp = bench_sub.add_parser(
         "export-suite",
