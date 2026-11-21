@@ -425,6 +425,7 @@ def test_default_study_cycle_separates_calibration_negatives_and_auto_holds_out_
 
 def test_mlx_mount_rollback_prevents_cross_request_leak(tmp_path: Path) -> None:
     """Verify MLXKernel.mount_unit rolls back partial layer mounts on error (Issue #10)."""
+    pytest.importorskip("mlx")
     from subcor.backends.mlx_kernel import MLXKernel
 
     class _FakeLayer:

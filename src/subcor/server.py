@@ -159,6 +159,12 @@ class ServingKernel(Protocol):
 
     def invalidate_unit(self, unit_id: str) -> None: ...
 
+    # Optional hook (not part of the required protocol; looked up with getattr):
+    #   prepare_units(units: Sequence[tuple[SkillUnitRegistry, str]]) -> None
+    # Called under TenantManager.lock before a unit can be routed (sandbox conformance,
+    # promotion, startup hydration) so backends that must load adapters out of process
+    # (llama.cpp GGUF LoRAs) can do so. MLX does not need it.
+
 
 class MLXServingAdapter:
     """Wraps MLXKernel behind the ServingKernel protocol."""
@@ -396,6 +402,8 @@ class TenantManager:
         self._study_worker.start()
 
         # Discover existing tenants persisted on disk + ensure initial_tenants exist.
+        # Adapter preparation for hydrated ENABLED units is batched into one kernel call.
+        self._deferred_prepare: list[TenantContext] | None = []
         tenants_root = self.state_dir / "tenants"
         if tenants_root.exists():
             for child in sorted(tenants_root.iterdir()):
@@ -403,6 +411,41 @@ class TenantManager:
                     self.ensure_tenant(child.name)
         for tid in initial_tenants:
             self.ensure_tenant(tid)
+        deferred, self._deferred_prepare = self._deferred_prepare, None
+        if callable(getattr(self.kernel, "prepare_units", None)):
+            with self.lock:
+                self._prepare_hydrated_units(deferred)
+
+    def _prepare_kernel_units(self, units: list[tuple[SkillUnitRegistry, str]]) -> None:
+        """Call the kernel's optional prepare_units hook (no-op for MLX/test kernels)."""
+        prepare = getattr(self.kernel, "prepare_units", None)
+        if callable(prepare) and units:
+            prepare(units)
+
+    def _prepare_hydrated_units(self, contexts: list[TenantContext]) -> None:
+        """Prepare routable units of `contexts`; quarantine any unit whose adapter fails."""
+        if not callable(getattr(self.kernel, "prepare_units", None)):
+            return
+        units = [(ctx, uid) for ctx in contexts for uid in ctx.router.registered_units]
+        if not units:
+            return
+        try:
+            self._prepare_kernel_units([(ctx.registry, uid) for ctx, uid in units])
+            return
+        except Exception:
+            pass
+        for ctx, uid in units:
+            try:
+                self._prepare_kernel_units([(ctx.registry, uid)])
+            except Exception as exc:
+                ctx.router.unregister(uid)
+                ctx.quarantined_units.append(uid)
+                warnings.warn(
+                    f"Quarantined ENABLED unit '{uid}' for tenant '{ctx.tenant_id}': "
+                    f"kernel could not load its adapter: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
     def _study_worker_loop(self) -> None:
         while True:
@@ -517,6 +560,11 @@ class TenantManager:
             quarantined_units=quarantined,
         )
         self._tenants[tid] = ctx
+        if self._deferred_prepare is not None:
+            self._deferred_prepare.append(ctx)
+        elif router.registered_units and callable(getattr(self.kernel, "prepare_units", None)):
+            with self.lock:
+                self._prepare_hydrated_units([ctx])
         return ctx
 
     def resolve_tenant_from_model(
@@ -779,15 +827,33 @@ class TenantManager:
                 neg_embs = np.stack([self.kernel.encode_prompt_embedding(p) for p in neg_prompts])
 
             # Phase 2: Adapter training (releases lock before/after so chat can interleave).
-            with self.lock:
-                deltas, init_loss, final_loss, zero_diff = self.kernel.train_skill_deltas(
-                    examples=examples,
-                    rank=rank,
-                    sub1bit_rank=sub1bit_rank,
-                    steps=steps,
-                    lr=lr,
-                    seed=seed,
-                )
+            # Kernels that can split training from packing (llama.cpp + PyTorch trainer) do
+            # the CPU-only sub-1-bit packing outside the lock, so chat is not blocked by it.
+            train_adapters = getattr(self.kernel, "train_skill_adapters", None)
+            pack_deltas = getattr(self.kernel, "pack_skill_deltas", None)
+            if callable(train_adapters) and callable(pack_deltas):
+                with self.lock:
+                    trained = train_adapters(
+                        examples=examples,
+                        rank=rank,
+                        steps=steps,
+                        lr=lr,
+                        seed=seed,
+                    )
+                deltas = pack_deltas(trained, sub1bit_rank=sub1bit_rank)
+                init_loss = trained.initial_loss
+                final_loss = trained.final_loss
+                zero_diff = trained.zero_perturbation_max_diff
+            else:
+                with self.lock:
+                    deltas, init_loss, final_loss, zero_diff = self.kernel.train_skill_deltas(
+                        examples=examples,
+                        rank=rank,
+                        sub1bit_rank=sub1bit_rank,
+                        steps=steps,
+                        lr=lr,
+                        seed=seed,
+                    )
 
             # Phase 3: Disk packaging & analytical RouterGate fitting (lock-free CPU work!).
             manifest = ctx.registry.propose(
@@ -834,6 +900,8 @@ class TenantManager:
             # Phase 4: Sandbox-register gate for locked conformance evaluation, then unregister
             # so the unit NEVER becomes live before independent approver sign-off.
             with self.lock:
+                # Backends that load adapters out of process (llama.cpp) load the unit now.
+                self._prepare_kernel_units([(ctx.registry, unit_id)])
                 ctx.router.register(gate)
                 try:
                     baseline_after = score_cases(base_eval, sys_prompt=None, use_router=True)
@@ -886,6 +954,17 @@ class TenantManager:
                     f"'{gate.tap_layer}' does not match active kernel tap_layer "
                     f"'{self.kernel.tap_layer}'"
                 )
+            # Load the unit's adapter (llama.cpp) BEFORE persisting ENABLED, but only for a
+            # promotable unit so rejected promotions never trigger backend work.
+            pending = ctx.registry.get_manifest(unit_id)
+            if (
+                pending.state is UnitState.CONFORMANT
+                and pending.conformance is not None
+                and pending.conformance.passed
+                and bool(approver and approver.strip())
+                and approver.strip() != pending.proposer.strip()
+            ):
+                self._prepare_kernel_units([(ctx.registry, unit_id)])
             manifest = ctx.registry.promote(unit_id, approver=approver)
             ctx.router.register(gate)
             if unit_id in ctx.quarantined_units:

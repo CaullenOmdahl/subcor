@@ -125,6 +125,18 @@ uv run --extra mlx subcor serve \
 
 Optional bearer auth: set `SUBCOR_API_KEY=...` or pass `--api-key`. See [docs/CAPHEOS-INTEGRATION.md](docs/CAPHEOS-INTEGRATION.md) for connecting multiple CaPheOS instances over an encrypted SSH loopback tunnel or LAN.
 
+#### AMD / NVIDIA / CPU: GGUF via llama.cpp (12–16 GB cards)
+
+On Linux (or any non-Apple machine), SUBCOR serves a GGUF through a `llama-server` it supervises itself, and trains Skill Units on a PyTorch trainer loaded from the **same** GGUF. Each trained unit is exported as a GGUF LoRA and hot-loaded:
+
+```bash
+uv sync --python 3.13 --extra dev --extra rocm      # torch ROCm trainer + gguf
+uv run --extra rocm subcor serve --backend llamacpp \
+  --gguf /path/to/Qwen3.5-0.8B-Q4_K_M.gguf --tenant company-a
+```
+
+Without `--gguf`, `--llamacpp-url` connects to an external `llama-server` for inference only. Start that server with `--embeddings --pooling mean`, and map routed units to the adapters it loaded with `--lora-id-map unit=id,...`. See [docs/AMD-GGUF.md](docs/AMD-GGUF.md) for llama.cpp installation, flags, measured numbers (RX 6800: ~234 tok/s llama.cpp vs ~31 tok/s PyTorch decode), VRAM budgets and limitations.
+
 ### 4. Standardized Longitudinal Functional Growth Benchmarks
 
 ```bash
@@ -198,8 +210,12 @@ src/subcor/
 ├── proving_ground.py      # Deterministic synthetic Micro-Intern proving ground
 ├── live_loop.py           # Live Apple Silicon MLX Intern, MoE, and Surgery workflows
 ├── cli.py                 # `subcor` CLI entrypoint (`serve`, `bench`, `recompile`, ...)
+├── gguf_export.py         # Skill Unit -> llama.cpp GGUF LoRA adapter exporter
 └── backends/
-    └── mlx_kernel.py      # Frozen Apple Silicon MLX kernel, stream_generate, SubcorMLXLinear
+    ├── mlx_kernel.py      # Frozen Apple Silicon MLX kernel, stream_generate, SubcorMLXLinear
+    ├── torch_kernel.py    # PyTorch (ROCm/CUDA/CPU) trainer/kernel, loads GGUF via transformers
+    ├── llamacpp_kernel.py # llama-server ServingKernel (chat/tools/SSE, LoRA routing, training)
+    └── llamacpp_supervisor.py # Owns the llama-server subprocess (restart with LoRA adapters)
 
 tests/                     # 31 automated unit & HTTP integration tests
 docs/
@@ -207,6 +223,7 @@ docs/
 ├── ARCHITECTURE.md        # Intended behavior contracts, invariants, and ADRs 001–006
 ├── BENCHMARK-REPORT.md    # Live verified 3-snapshot growth report on Qwen3.5-0.8B-4bit
 ├── CAPHEOS-INTEGRATION.md # Multi-instance CaPheOS deployment & governance runbook
+├── AMD-GGUF.md            # GGUF serving via llama.cpp + PyTorch training on 12–16 GB cards
 └── ROADMAP.md             # Milestone exit gates and next steps
 ```
 
