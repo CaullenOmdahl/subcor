@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import tempfile
 from pathlib import Path
 
@@ -251,6 +252,42 @@ def _run_mlx_moe_cli(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_serve_cli(args: argparse.Namespace) -> int:
+    from slaingi.server import MLXServingAdapter, SlaingiHTTPServer, TenantManager
+
+    api_key = args.api_key or os.environ.get("SLAINGI_API_KEY")
+    if args.host not in ("127.0.0.1", "localhost", "::1") and not api_key:
+        print(
+            "WARNING: Binding to a non-loopback address without --api-key / SLAINGI_API_KEY. "
+            "Set a bearer key before exposing on LAN."
+        )
+
+    state_dir = args.state_dir.expanduser().resolve()
+    tenants = tuple(t.strip() for t in (args.tenants or []) if t.strip())
+    print(f"Loading frozen base kernel '{args.model}' ...")
+    kernel = MLXServingAdapter(model_id=args.model)
+    manager = TenantManager(state_dir=state_dir, kernel=kernel, initial_tenants=tenants)
+    server = SlaingiHTTPServer((args.host, args.port), manager=manager, api_key=api_key)
+
+    print("=========================================================================")
+    print(" SLAINGI — Multi-Tenant Server Ready")
+    print("=========================================================================")
+    print(f"Listen         : http://{args.host}:{args.port}")
+    print(f"OpenAI BaseURL : http://{args.host}:{args.port}/v1")
+    print(f"Frozen Kernel  : {args.model}")
+    print(f"State Dir      : {state_dir}")
+    print(f"Auth           : {'Bearer token enabled' if api_key else 'DISABLED (loopback dev)'}")
+    print(f"Tenants        : {', '.join(manager.list_tenants()) or '(auto-create on request)'}")
+    print("=========================================================================")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down SLAINGI server cleanly.")
+    finally:
+        server.server_close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="slaingi",
@@ -321,6 +358,43 @@ def main(argv: list[str] | None = None) -> int:
     mlx_moe_cmd.add_argument("--seed", type=int, default=42)
     mlx_moe_cmd.add_argument("--export-capheos", type=Path, default=None)
 
+    serve_cmd = sub.add_parser(
+        "serve",
+        help="Run the multi-tenant OpenAI-compatible & governed SLAINGI HTTP server.",
+    )
+    serve_cmd.add_argument(
+        "--model",
+        type=str,
+        default="mlx-community/Qwen3.5-0.8B-4bit",
+        help="Compact Hugging Face MLX model ID.",
+    )
+    serve_cmd.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="Bind host (use 10.1.100.11 to serve LAN peers like 10.1.100.10).",
+    )
+    serve_cmd.add_argument("--port", type=int, default=8420, help="Bind port.")
+    serve_cmd.add_argument(
+        "--state-dir",
+        type=Path,
+        default=Path.home() / ".local" / "share" / "slaingi",
+        help="Persistent directory for per-tenant Skill Units and trajectories.",
+    )
+    serve_cmd.add_argument(
+        "--tenant",
+        dest="tenants",
+        action="append",
+        default=[],
+        help="Pre-register a CaPheOS tenant ID (repeatable, e.g. --tenant company-a --tenant company-b).",
+    )
+    serve_cmd.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="Optional bearer API key (or set SLAINGI_API_KEY env var).",
+    )
+
     inspect_cmd = sub.add_parser(
         "inspect",
         help="Inspect registered Skill Units and verify SHA-256 integrity in a unit store.",
@@ -362,6 +436,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "mlx-moe":
         return _run_mlx_moe_cli(args)
+
+    if args.command == "serve":
+        return _run_serve_cli(args)
 
     if args.command == "inspect":
         registry = SkillUnitRegistry(args.units_dir)

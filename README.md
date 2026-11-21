@@ -58,6 +58,11 @@ Targets compact, capable local models (defaults to `mlx-community/Qwen3.5-0.8B-4
 ```bash
 uv sync --extra dev --extra mlx
 
+# Live Multi-Tenant OpenAI-Compatible & Governed Server (for 1..N CaPheOS instances)
+SLAINGI_API_KEY="replace-with-strong-key" uv run --extra mlx slaingi serve \
+  --host 127.0.0.1 --port 8420 \
+  --tenant company-1 --tenant company-2
+
 # Live Routed MoE Skill Layer (Shared Dense 0.8B Core + Two Routed Sub-1-Bit Experts)
 # Demonstrates multi-skill stacking with 0% general QA regression
 uv run --extra mlx slaingi mlx-moe \
