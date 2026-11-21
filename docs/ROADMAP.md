@@ -52,9 +52,10 @@ Turn senior-seat review transcripts into scheduled overnight adapter growth:
 
 Run SLAINGI as a real CaPheOS proving ground:
 
-- [x] Multi-tenant OpenAI-compatible & governed HTTP server (`slaingi serve`, `src/slaingi/server.py`) serving one frozen 0.8B kernel to multiple isolated CaPheOS instances (`/v1/chat/completions` with SSE streaming, `/readyz`, `/v1/models`, per-tenant `/trajectories`, `/study`, `/promote`, `/rollback`, `/export-capheos`).
-- [x] Integration & deployment contract for serving two CaPheOS instances on CachyOS (`10.1.100.10`) from `10.1.100.11:8420` (`docs/CAPHEOS-INTEGRATION.md`).
-- [ ] Live connection from both CaPheOS instances on `10.1.100.10` once host is online + overnight scheduled study cron.
+- [x] Multi-tenant OpenAI-compatible & governed HTTP server (`slaingi serve`, `src/slaingi/server.py`) serving one frozen 0.8B kernel to multiple isolated CaPheOS instances (`/v1/chat/completions` with SSE streaming, `/readyz`, `/v1/models`, `/api/tags`, per-tenant `/trajectories`, `/study`, `/promote`, `/rollback`, `/export-capheos`).
+- [x] Standardized longitudinal benchmark system (`slaingi bench`, `slaingi-core-v1`, `BenchmarkLedger`, `docs/BENCHMARK-REPORT.md`).
+- [x] Integration & deployment contract for serving multiple CaPheOS instances over an encrypted SSH loopback tunnel (`docs/CAPHEOS-INTEGRATION.md`).
+- [ ] Overnight scheduled study daemon + live Intern seat telemetry in CaPheOS.
 - [ ] Export battle-tested learned Skill Units from one company and import them cleanly into a fresh second company.
 
 **Exit Gate:** End-to-end CaPheOS company run where an Intern seat earns graduated autonomy via promoted Skill Units and cleanly exports a portable unit with zero company data leakage.

@@ -1,86 +1,85 @@
-# Serving `ca-phe-digital` & `capheos-sandbox` on CachyOS (`10.1.100.10`)
+# Serving Multiple CaPheOS Instances
 
-SLAINGI runs on your **Apple M5 (`10.1.100.11`)** as a single multi-tenant HTTP server wrapping one frozen `652 MB` **`Qwen3.5-0.8B-4bit`** kernel, while isolating Skill Units, telemetry, and MoE routers per company:
+SLAINGI runs as a **standalone multi-tenant HTTP server** outside CaPheOS containers, sharing one frozen `652 MB` **`Qwen3.5-0.8B-4bit`** base kernel across multiple isolated company tenants:
 
-- **`ca-phe-digital`** (CachyOS console `:8900`, station `:8800`) → model `slaingi/ca-phe-digital`
-- **`capheos-sandbox`** (CachyOS console `:8910`, station `:8810`) → model `slaingi/capheos-sandbox`
+- **Instance A (`company-a`)** → model `slaingi/company-a`
+- **Instance B (`company-b`)** → model `slaingi/company-b`
 
-Because CaPheOS's `custom` provider slot is already used for MiniMax, SLAINGI plugs into StarNet's built-in **`ollama` provider (`http://127.0.0.1:11434/v1`, unmetered, zero collision with MiniMax)**. Both `/v1/models` and Ollama's `/api/tags` are served natively.
+Because CaPheOS's `custom` provider slot may already be assigned to another provider (e.g., MiniMax), SLAINGI plugs cleanly into StarNet's built-in **`ollama` provider (`http://127.0.0.1:11434/v1`, unmetered)** by serving both `/v1/models` and Ollama's `/api/tags`.
 
 ---
 
-## Option 1 (Recommended): Encrypted SSH Loopback Tunnel (Zero Open LAN Ports)
+## Option 1 (Recommended): Encrypted SSH Loopback Tunnel
 
-Port `11434` is free on `10.1.100.10`. Keeping SLAINGI bound strictly to `127.0.0.1:8420` on `10.1.100.11` and reverse-forwarding `127.0.0.1:11434` onto `10.1.100.10` means:
-- Zero open LAN ports on macOS
-- Zero systemd changes on `10.1.100.10`
+Keep SLAINGI bound strictly to `127.0.0.1:8420` on the GPU/Apple Silicon host and reverse-forward `127.0.0.1:11434` onto the CaPheOS host over SSH:
+- Zero open LAN ports on the model host
+- Zero systemd changes on the CaPheOS host
 - Zero edits to `.starnet-data/workspaces/.secrets/` (never trips `locked-watch.js`)
 
-### 1. Start SLAINGI on Apple M5 (`10.1.100.11`)
+### 1. Start SLAINGI on the Model Host (Apple Silicon / GPU)
 ```bash
-cd /Users/caullen/Documents/Dev/GitHub/slaingi
 uv run --extra mlx slaingi serve \
   --host 127.0.0.1 \
   --port 8420 \
   --state-dir ~/.local/share/slaingi \
-  --tenant ca-phe-digital \
-  --tenant capheos-sandbox
+  --tenant company-a \
+  --tenant company-b
 ```
 
-### 2. Forward `127.0.0.1:11434` on `10.1.100.10` → `127.0.0.1:8420` on `10.1.100.11`
+*(On macOS, install the server venv outside `~/Documents`—e.g. `~/.local/share/slaingi/venv`—if running under `launchd` to avoid macOS TCC `Documents` restrictions.)*
+
+### 2. Forward `127.0.0.1:11434` on the CaPheOS Host → `127.0.0.1:8420` on the Model Host
 ```bash
 ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
-  -R 127.0.0.1:11434:127.0.0.1:8420 caullen@10.1.100.10
+  -R 127.0.0.1:11434:127.0.0.1:8420 <user>@<capheos-host>
 ```
 
-### 3. Verify from `10.1.100.10`
+### 3. Verify from the CaPheOS Host
 ```bash
 curl -s http://127.0.0.1:11434/readyz | jq
 curl -s http://127.0.0.1:11434/v1/models | jq
+node company/tools/hire.js models   # should list slaingi/company-a and slaingi/company-b under "ollama"
 ```
 
 ---
 
-## Option 2: Direct LAN Bind (`10.1.100.11:8420`) + `OLLAMA_BASE_URL`
+## Option 2: Direct LAN Bind + `OLLAMA_BASE_URL`
 
-If you prefer direct LAN traffic (4.4 ms RTT) instead of an SSH tunnel:
-
-1. Start SLAINGI on `10.1.100.11` with `--host 10.1.100.11 --port 8420` (firewall TCP `8420` to `10.1.100.10` only).
-2. Add `Environment=OLLAMA_BASE_URL=http://10.1.100.11:8420/v1` to the `capheos-sandbox-station` and `ca-phe-digital-station` systemd units on `10.1.100.10` and restart them.
+1. Start SLAINGI with `--host <model-host-lan-ip> --port 8420` (restricting firewall ingress on TCP `8420` to `<capheos-host>` only).
+2. Set `Environment=OLLAMA_BASE_URL=http://<model-host-lan-ip>:8420/v1` on each CaPheOS station systemd unit and restart.
 
 ---
 
-## Registering the Intern Model in Each Company's `model-policy.json`
+## Registering the Intern Model in CaPheOS Governance
 
-In `capheos-sandbox/company/model-policy.json` (and `ca-phe-digital/company/model-policy.json`), under `"allowed"` (approved by CEO/owner per `company/MODEL_POLICY.md`):
+`company/model-policy.json` is watched by `locked-watch.js` (Class F, owned by the `people` seat). Approve and add `ollama` through your sanctioned `people`/owner workflow:
 
 ```json
 "ollama": {
-  "models": ["slaingi/capheos-sandbox"],
+  "models": ["slaingi/company-a"],
   "note": "Local SLAINGI 0.8B Intern server (unmetered, MoE-routed Sub-1-Bit Skill Units)"
 }
 ```
-*(Use `"slaingi/ca-phe-digital"` in `ca-phe-digital/company/model-policy.json`.)*
 
 ---
 
-## Governed Learning & Benchmarking Loop
+## Governed Learning & Longitudinal Benchmarking
 
 ```bash
-# Baseline longitudinal benchmark for capheos-sandbox
+# Record Day-0 longitudinal benchmark snapshot
 uv run slaingi bench run \
   --endpoint http://127.0.0.1:8420/v1 \
-  --model slaingi/capheos-sandbox \
-  --label "day0-sandbox-base" \
-  --ledger ~/.local/share/slaingi/benchmarks/capheos-sandbox.jsonl
+  --model slaingi/company-a \
+  --label "day0-frozen-base" \
+  --ledger ~/.local/share/slaingi/benchmarks/company-a.jsonl
 
-# Promote a CONFORMANT unit after risk sign-off (self-approval by tools returns 403)
-curl -s -X POST http://127.0.0.1:8420/v1/slaingi/tenants/capheos-sandbox/units/<unit-id>/promote \
+# Promote a CONFORMANT unit after independent risk sign-off (self-approval returns HTTP 403)
+curl -s -X POST http://127.0.0.1:8420/v1/slaingi/tenants/company-a/units/<unit-id>/promote \
   -H "Content-Type: application/json" \
   -d '{"approver": "risk"}'
 
-# Atomic rollback
-curl -s -X POST http://127.0.0.1:8420/v1/slaingi/tenants/capheos-sandbox/units/<unit-id>/rollback \
+# Instant atomic rollback
+curl -s -X POST http://127.0.0.1:8420/v1/slaingi/tenants/company-a/units/<unit-id>/rollback \
   -H "Content-Type: application/json" \
   -d '{"actor": "risk", "reason": "Regression detected"}'
 ```

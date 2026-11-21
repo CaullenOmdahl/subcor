@@ -482,7 +482,7 @@ def main(argv: list[str] | None = None) -> int:
         "--host",
         type=str,
         default="127.0.0.1",
-        help="Bind host (use 10.1.100.11 to serve LAN peers like 10.1.100.10).",
+        help="Bind host (keep 127.0.0.1 with an SSH tunnel, or bind a LAN IP with --api-key).",
     )
     serve_cmd.add_argument("--port", type=int, default=8420, help="Bind port.")
     serve_cmd.add_argument(
@@ -528,7 +528,7 @@ def main(argv: list[str] | None = None) -> int:
         "--endpoint",
         type=str,
         default=None,
-        help="OpenAI-compatible base URL (e.g. http://10.1.100.11:8420/v1). If omitted, runs local MLX.",
+        help="OpenAI-compatible base URL (e.g. http://127.0.0.1:8420/v1). If omitted, runs local MLX.",
     )
     b_run.add_argument("--api-key", type=str, default=None)
     b_run.add_argument("--model", type=str, default="mlx-community/Qwen3.5-0.8B-4bit")
