@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Local runtime state & model caches
+.slaingi/
+models/
+artifacts/
+*.gguf
+*.safetensors
+*.bin
+*.npz
+
+# OS
+.DS_Store

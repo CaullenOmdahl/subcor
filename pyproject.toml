@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "slaingi"
+version = "0.1.0"
+description = "Self-Learning AI General Intelligence — governed weight-space surgery, dynamic low-rank expansion, and sub-1-bit skill units over frozen quantized models."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = { text = "AGPL-3.0-or-later" }
+authors = [
+    { name = "Caullen Omdahl" },
+]
+dependencies = [
+    "numpy>=2.0,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+mlx = [
+    "mlx>=0.24",
+    "mlx-lm>=0.24",
+]
+
+[project.scripts]
+slaingi = "slaingi.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/slaingi"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
