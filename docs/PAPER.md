@@ -1,9 +1,9 @@
-# SLAINGI: Governed Sub-1-Bit Routed Skill Units for Self-Learning Compact Language Models
+# SUBCOR: Governed Sub-1-Bit Routed Skill Units for Self-Learning Compact Language Models
 
 **Author:** Caullen Omdahl  
 **Date:** November 21, 2026  
 **Status:** Working Methodology Draft (v0.1 — Timestamped Preprint)  
-**Reference Implementation:** `slaingi` (`0.1.0`)
+**Reference Implementation:** `subcor` (`0.1.0`)
 
 ---
 
@@ -11,9 +11,9 @@
 
 Most practical "self-improving" AI agent frameworks today never modify neural network weights; they instead mutate prompts, memory stores, or retrieval indices. Conversely, recent neural weight-editing and low-bit compression papers—such as direct weight-space programming, sub-1-bit binary factorization, and quantization-aware training—are typically studied in isolation on static checkpoints without runtime governance, rollback guarantees, or protection against catastrophic forgetting.
 
-We present **SLAINGI** (*Self-Learning AI General Intelligence*), a governed runtime architecture that enables **sub-billion-parameter quantized language models** to acquire new structured capabilities and patch structural failure modes on consumer hardware without overwriting base model weights. SLAINGI treats a frozen 4-bit model (e.g., `Qwen3.5-0.8B-4bit`, 652 MB) as an immutable shared core and represents every learned capability or surgical patch as a **content-addressed, sub-1-bit binary Skill Unit** ($\approx 0.0302$ bits/weight, `81.4 KiB` across 22M adapted MLP weights). To prevent cross-skill interference and general-knowledge regression, Skill Units are selected dynamically via a **training-free, frozen-base activation-space MoE router** that falls back cleanly to zero active experts on out-of-domain queries. Every weight delta passes through four enforceable governance gates: a **Verified Evidence Gate** on incoming trajectories, **SHA-256 payload integrity**, an immutable **Conformance Gate** with locked anchor non-regression tolerances, and **separation of duties (no self-approval)** with instant atomic rollback.
+We present **SUBCOR** (*Sub-Bit Unit-Based Continual On-Policy Runtime*), a governed runtime architecture that enables **sub-billion-parameter quantized language models** to acquire new structured capabilities and patch structural failure modes on consumer hardware without overwriting base model weights. SUBCOR treats a frozen 4-bit model (e.g., `Qwen3.5-0.8B-4bit`, 652 MB) as an immutable shared core and represents every learned capability or surgical patch as a **content-addressed, sub-1-bit binary Skill Unit** ($\approx 0.0302$ bits/weight, `81.4 KiB` across 22M adapted MLP weights). To prevent cross-skill interference and general-knowledge regression, Skill Units are selected dynamically via a **training-free, frozen-base activation-space MoE router** that falls back cleanly to zero active experts on out-of-domain queries. Every weight delta passes through four enforceable governance gates: a **Verified Evidence Gate** on incoming trajectories, **SHA-256 payload integrity**, an immutable **Conformance Gate** with locked anchor non-regression tolerances, and **separation of duties (no self-approval)** with instant atomic rollback.
 
-We evaluate SLAINGI both on a controlled multi-layer residual proving ground and live on Apple Silicon (M5, 16 GB unified memory) running `Qwen3.5-0.8B-4bit` over a standardized, content-hashed 5-axis longitudinal benchmark (`slaingi-core-v1`). Adding two independent routed sub-1-bit Skill Units (`162.8 KiB` total) increases unseen company operations routing accuracy from `0.0%` to `60.0%–80.0%` (`100.0%` semantic routing accuracy across unseen prompts), preserves all locked general-reasoning and instruction-discipline anchors at `+0.0 pp` regression (`80.0% → 80.0%`), reduces average turn latency (`171 ms → 137 ms`) via an `18.3 ms` early-exit routing tap and native-dtype mounted adapters, and supports sustained HTTP decode at `154.1 tok/s`. We also report two negative empirical findings—single-layer rank-1 live surgery failing conformance on verbose word problems and seed variance in cold-start Binary STE on 12-example batches—demonstrating the necessity of locked conformance gates in self-modifying systems.
+We evaluate SUBCOR both on a controlled multi-layer residual proving ground and live on Apple Silicon (M5, 16 GB unified memory) running `Qwen3.5-0.8B-4bit` over a standardized, content-hashed 5-axis longitudinal benchmark (`subcor-core-v1`). Adding two independent routed sub-1-bit Skill Units (`162.8 KiB` total) increases unseen company operations routing accuracy from `0.0%` to `60.0%–80.0%` (`100.0%` semantic routing accuracy across unseen prompts), preserves all locked general-reasoning and instruction-discipline anchors at `+0.0 pp` regression (`80.0% → 80.0%`), reduces average turn latency (`171 ms → 137 ms`) via an `18.3 ms` early-exit routing tap and native-dtype mounted adapters, and supports sustained HTTP decode at `154.1 tok/s`. We also report two negative empirical findings—single-layer rank-1 live surgery failing conformance on verbose word problems and seed variance in cold-start Binary STE on 12-example batches—demonstrating the necessity of locked conformance gates in self-modifying systems.
 
 ---
 
@@ -28,19 +28,19 @@ Four structural barriers have prevented small local models from acting as genuin
 3. **Storage and Transfer Overhead:** Standard FP16 LoRA adapters require hundreds of kilobytes to tens of megabytes per skill and lack standardized manifests, integrity digests, or capability declarations.
 4. **Ungoverned Self-Modification:** Allowing an agent to collect unverified transcripts, synthesize weight updates, and promote those updates without independent verification invites compounding hallucination ("blind leading the blind") and silent capability erosion.
 
-SLAINGI resolves these four barriers by unifying four complementary mechanisms around a single portable artifact—the **Governed Sub-1-Bit Skill Unit**—designed to run standalone or alongside governed agent operating systems such as CaPheOS.
+SUBCOR resolves these four barriers by unifying four complementary mechanisms around a single portable artifact—the **Governed Sub-1-Bit Skill Unit**—designed to run standalone or alongside governed agent operating systems such as CaPheOS.
 
 ---
 
 ## 2. Related Work
 
-SLAINGI synthesizes five active research threads into one cohesive, governed runtime:
+SUBCOR synthesizes five active research threads into one cohesive, governed runtime:
 
-- **Low-Rank & Quantized Adaptation:** QLoRA (Dettmers et al., 2023) established training low-rank adapters over frozen 4-bit base models; Punica, S-LoRA, and LoRAX demonstrated multi-tenant hot-swapping of LoRA adapters over a shared base model. SLAINGI extends this multi-tenant pattern with sub-1-bit binary packing and strict per-tenant isolation.
-- **MoE-Style Adapter Routing:** LoRAHub, LoRAMoE, Arrow, and PHATGOOSE route across pools of LoRA modules. Rather than training a parameterized router network (which collapses on 10–20 on-policy examples), SLAINGI uses a training-free contrastive prototype gate tapped directly from **frozen-base** hidden activations.
-- **Weight-Space Programming & Directional Ablation:** Representation Engineering (Zou et al., 2023), Directional Ablation for refusal removal (Arditi et al., 2024), and MIT CSAIL's *"Sparks of Weight-Space Programming"* (Takehi et al., Nov 2026) showed that structural behavioral defects—such as thinking loops in `Qwen3.5-0.8B`—can be ablated directly in weight space without gradient descent. SLAINGI incorporates zero-gradient contrastive directional surgery as a first-class adaptation mode alongside gradient expansion.
-- **Sub-1-Bit Quantization & QAT:** NanoQuant (Chong et al., ICML 2026), LittleBit, and BTC-LLM (ACL 2026) break the 1-bit-per-weight barrier using low-rank binary factorization and codebooks; Google DeepMind's Gemma 4 QAT demonstrated training around low-bit rounding constraints via Straight-Through Estimators (STE). SLAINGI applies NanoQuant-style bit-packed factorization to **portable skill deltas** rather than pre-training from scratch.
-- **On-Policy Distillation:** Generalized Knowledge Distillation (Agarwal et al., 2024) and on-policy self-distillation show that training a compact student on corrections to its own trajectories outperforms passive off-policy imitation. SLAINGI embeds this pattern organizationally as an "Intern" seat supervised by senior seats and deterministic verifiers.
+- **Low-Rank & Quantized Adaptation:** QLoRA (Dettmers et al., 2023) established training low-rank adapters over frozen 4-bit base models; Punica, S-LoRA, and LoRAX demonstrated multi-tenant hot-swapping of LoRA adapters over a shared base model. SUBCOR extends this multi-tenant pattern with sub-1-bit binary packing and strict per-tenant isolation.
+- **MoE-Style Adapter Routing:** LoRAHub, LoRAMoE, Arrow, and PHATGOOSE route across pools of LoRA modules. Rather than training a parameterized router network (which collapses on 10–20 on-policy examples), SUBCOR uses a training-free contrastive prototype gate tapped directly from **frozen-base** hidden activations.
+- **Weight-Space Programming & Directional Ablation:** Representation Engineering (Zou et al., 2023), Directional Ablation for refusal removal (Arditi et al., 2024), and MIT CSAIL's *"Sparks of Weight-Space Programming"* (Takehi et al., Nov 2026) showed that structural behavioral defects—such as thinking loops in `Qwen3.5-0.8B`—can be ablated directly in weight space without gradient descent. SUBCOR incorporates zero-gradient contrastive directional surgery as a first-class adaptation mode alongside gradient expansion.
+- **Sub-1-Bit Quantization & QAT:** NanoQuant (Chong et al., ICML 2026), LittleBit, and BTC-LLM (ACL 2026) break the 1-bit-per-weight barrier using low-rank binary factorization and codebooks; Google DeepMind's Gemma 4 QAT demonstrated training around low-bit rounding constraints via Straight-Through Estimators (STE). SUBCOR applies NanoQuant-style bit-packed factorization to **portable skill deltas** rather than pre-training from scratch.
+- **On-Policy Distillation:** Generalized Knowledge Distillation (Agarwal et al., 2024) and on-policy self-distillation show that training a compact student on corrections to its own trajectories outperforms passive off-policy imitation. SUBCOR embeds this pattern organizationally as an "Intern" seat supervised by senior seats and deterministic verifiers.
 
 ---
 
@@ -48,7 +48,7 @@ SLAINGI synthesizes five active research threads into one cohesive, governed run
 
 ### 3.1 Immutable Quantized Base Kernel
 
-A compact open-weight quantized checkpoint $f_{\theta_0}$ (default `mlx-community/Qwen3.5-0.8B-4bit`, 24 layers, `1024 × 3584` MLP projections, `652 MB` on disk) is loaded once and frozen (`model.freeze()`). Base weights are strictly read-only (`writeable=False` in the NumPy core; `base.freeze()` in `SlaingiMLXLinear`). Every target linear projection $W_{\text{base}} \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$ is wrapped so runtime inference computes:
+A compact open-weight quantized checkpoint $f_{\theta_0}$ (default `mlx-community/Qwen3.5-0.8B-4bit`, 24 layers, `1024 × 3584` MLP projections, `652 MB` on disk) is loaded once and frozen (`model.freeze()`). Base weights are strictly read-only (`writeable=False` in the NumPy core; `base.freeze()` in `SubcorMLXLinear`). Every target linear projection $W_{\text{base}} \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$ is wrapped so runtime inference computes:
 
 $$y = x W_{\text{base}}^T + \sum_{u \in \mathcal{A}(x)} \Delta_u(x)$$
 
@@ -60,7 +60,7 @@ All runtime trajectories are appended to an immutable JSONL store (`TrajectorySt
 
 ### 3.3 Dual-Mode Adaptation Engine
 
-Empirical evidence shows that direct weight editing unblocks latent defects cleanly but cannot synthesize complex missing circuits from scratch. SLAINGI therefore separates adaptation into two distinct modes:
+Empirical evidence shows that direct weight editing unblocks latent defects cleanly but cannot synthesize complex missing circuits from scratch. SUBCOR therefore separates adaptation into two distinct modes:
 
 #### Mode A — Zero-Gradient Contrastive Weight-Space Surgery (`WeightSpaceSurgeon`)
 Given verified activation snapshots from failing/looping runs $H_{\text{fail}} \in \mathbb{R}^{N_f \times d_{\text{out}}}$ and clean passing runs $H_{\text{clean}} \in \mathbb{R}^{N_c \times d_{\text{out}}}$ at each instrumented layer $\ell$:
@@ -73,15 +73,15 @@ Given verified activation snapshots from failing/looping runs $H_{\text{fail}} \
    so $(W_{\text{base}}^{(\ell)} + \Delta W^{(\ell)})h = (I - \alpha U_k U_k^T) W_{\text{base}}^{(\ell)} h$, attenuating the failure direction while leaving orthogonal clean features invariant.
 
 #### Mode B — Function-Preserving Dynamic Expansion & Quantized Adaptation
-When the base model genuinely lacks a skill circuit, SLAINGI appends a new zero-initialized low-rank branch ($B_{\text{new}} = 0$ in FP32, or $s_{\text{out}} = 0$ in Binary STE) and verifies the **strict zero-perturbation invariant** before step 0:
+When the base model genuinely lacks a skill circuit, SUBCOR appends a new zero-initialized low-rank branch ($B_{\text{new}} = 0$ in FP32, or $s_{\text{out}} = 0$ in Binary STE) and verifies the **strict zero-perturbation invariant** before step 0:
 
 $$\max_x \|f_{\text{expanded}}(x) - f_{\text{base}}(x)\|_\infty = 0.0$$
 
-Only the newly attached branch is unfrozen and optimized over verified `(prompt, senior_correction)` pairs via completion-masked causal cross-entropy (`AdamW`, cosine decay, gradient norm clipping at `1.0`). For hybrid architectures such as Qwen3.5's GatedDeltaNet, the model switches cleanly to `model.train()` during adaptation (using differentiable MLX ops rather than inference-only Metal kernels) and returns to `model.eval()` and `model.freeze()` immediately after extraction. SLAINGI supports both FP32 warm-start followed by sub-1-bit factorization and opt-in Two-Stage Binary STE QAT (`_ste_sign_pm1` with clipped straight-through gradient $\mathbf{1}_{|z|\le 1}$).
+Only the newly attached branch is unfrozen and optimized over verified `(prompt, senior_correction)` pairs via completion-masked causal cross-entropy (`AdamW`, cosine decay, gradient norm clipping at `1.0`). For hybrid architectures such as Qwen3.5's GatedDeltaNet, the model switches cleanly to `model.train()` during adaptation (using differentiable MLX ops rather than inference-only Metal kernels) and returns to `model.eval()` and `model.freeze()` immediately after extraction. SUBCOR supports both FP32 warm-start followed by sub-1-bit factorization and opt-in Two-Stage Binary STE QAT (`_ste_sign_pm1` with clipped straight-through gradient $\mathbf{1}_{|z|\le 1}$).
 
 ### 3.4 Sub-1-Bit Low-Rank Binary Factorization (`Sub1BitMatrix`)
 
-Inspired by NanoQuant, SLAINGI compresses any layer weight delta $\Delta W \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$ into bit-packed binary low-rank factors plus float16 scaling vectors:
+Inspired by NanoQuant, SUBCOR compresses any layer weight delta $\Delta W \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$ into bit-packed binary low-rank factors plus float16 scaling vectors:
 
 $$\Delta W \approx \operatorname{diag}(s_1)\,\left(U_{\pm 1}\operatorname{diag}(\sigma)V_{\pm 1}^T\right)\,\operatorname{diag}(s_2)$$
 
@@ -102,9 +102,9 @@ For `Qwen3.5-0.8B-4bit`'s `mlp.down_proj` layers ($d_{\text{out}} = 1024$, $d_{\
 
 ### 3.5 Training-Free Frozen-Base Activation-Space MoE Router (`MoESkillRouter`)
 
-To compose multiple Skill Units without cross-skill interference or general-knowledge forgetting, SLAINGI implements a **Shared Dense Core + Routed Skill Units** topology:
+To compose multiple Skill Units without cross-skill interference or general-knowledge forgetting, SUBCOR implements a **Shared Dense Core + Routed Skill Units** topology:
 
-1. **Invariant Prompt Tap (Early-Exit Prefill):** For any user prompt $p$ (evaluated with `system_prompt=None` so routing is strictly semantic), SLAINGI bypasses all mounted adapters (`_bypass_adapters=True`) and executes layers $0 \dots \ell_{\text{tap}}$ only—stopping immediately after $\ell_{\text{tap}}$ and skipping downstream layers plus the 248,320-token `lm_head`. The mean output activation at $\ell_{\text{tap}}$ is L2-normalized to produce an embedding $e(p) \in \mathbb{S}^{d-1}$ that is **mathematically invariant** to which Skill Units are installed or enabled.
+1. **Invariant Prompt Tap (Early-Exit Prefill):** For any user prompt $p$ (evaluated with `system_prompt=None` so routing is strictly semantic), SUBCOR bypasses all mounted adapters (`_bypass_adapters=True`) and executes layers $0 \dots \ell_{\text{tap}}$ only—stopping immediately after $\ell_{\text{tap}}$ and skipping downstream layers plus the 248,320-token `lm_head`. The mean output activation at $\ell_{\text{tap}}$ is L2-normalized to produce an embedding $e(p) \in \mathbb{S}^{d-1}$ that is **mathematically invariant** to which Skill Units are installed or enabled.
 2. **Analytical Contrastive `RouterGate`:** Each Skill Unit stores a lightweight gate fitted analytically from verified positive prompt embeddings $E^+$ vs. verified negative/general embeddings $E^-$:
    $$\mu_+ = \operatorname{unit}(\overline{E^+}), \quad \mu_- = \operatorname{unit}(\overline{E^-}), \quad s(e) = \langle e, \mu_+ \rangle - \langle e, \mu_- \rangle$$
    The decision threshold $\tau$ is calibrated conservatively above $\max_{e \in E^-} s(e)$ (a 65/35 blend between $\max(s^-)$ and the 15th percentile of $s^+$ when separable).
@@ -112,7 +112,7 @@ To compose multiple Skill Units without cross-skill interference or general-know
 
 ### 3.6 Governed Skill Unit Lifecycle & Multi-Tenant Isolation
 
-Every Skill Unit is packaged into a content-addressed directory (`manifest.json`, `payload.slun`, optional `router_gate.json`) governed by a strict finite state machine:
+Every Skill Unit is packaged into a content-addressed directory (`manifest.json`, `payload.scun`, optional `router_gate.json`) governed by a strict finite state machine:
 
 $$\texttt{DORMANT} \xrightarrow{\text{locked conformance pass}} \texttt{CONFORMANT} \xrightarrow{\text{approver} \neq \text{proposer}} \texttt{ENABLED} \xrightarrow{\text{atomic rollback}} \texttt{ROLLED\_BACK}$$
 
@@ -120,13 +120,13 @@ Four invariants are enforced in code:
 - **Content Integrity:** Every load, promotion, and export verifies payload SHA-256 against `manifest.payload_sha256` (fail-closed `IntegrityError`).
 - **Locked Conformance Gate:** Candidate units must improve target capability by $\ge \Delta_{\min}$ while keeping baseline regression within tolerance $\epsilon_{\max}$.
 - **No Self-Approval:** `promote(unit_id, approver)` raises `GovernanceError` whenever `approver == manifest.proposer`.
-- **Multi-Tenant Serving & Portable Export:** `SlaingiHTTPServer` shares one frozen base kernel across $N$ isolated tenants (`slaingi/<tenant_id>`), each with its own unit registry, trajectory store, and MoE router. Promoted units export to both **CaPheOS format-2 `module.json` bundles** (with runnable Node `conformance/test.js`) and stock **`mlx-lm` `adapters.safetensors`**.
+- **Multi-Tenant Serving & Portable Export:** `SubcorHTTPServer` shares one frozen base kernel across $N$ isolated tenants (`subcor/<tenant_id>`), each with its own unit registry, trajectory store, and MoE router. Promoted units export to both **CaPheOS format-2 `module.json` bundles** (with runnable Node `conformance/test.js`) and stock **`mlx-lm` `adapters.safetensors`**.
 
 ---
 
-## 4. Experimental Setup & Standardized Benchmark (`slaingi-core-v1`)
+## 4. Experimental Setup & Standardized Benchmark (`subcor-core-v1`)
 
-To prevent goalpost drift across iterations, SLAINGI defines an immutable, content-hashed longitudinal benchmark suite **`slaingi-core-v1@1.0.0`** (`sha256:9e9383e77a24`, 24 deterministic test cases across 5 functional axes):
+To prevent goalpost drift across iterations, SUBCOR defines an immutable, content-hashed longitudinal benchmark suite **`subcor-core-v1@1.0.0`** (`sha256:1732c1fcad55`, 24 deterministic test cases across 5 functional axes):
 
 | Axis | Cases | Role | Deterministic Grader |
 |---|---:|---|---|
@@ -144,7 +144,7 @@ Every run appends an immutable `BenchmarkSnapshot` to a JSONL `BenchmarkLedger` 
 
 ## 5. Empirical Results
 
-### 5.1 Controlled Synthetic Proving Ground (`slaingi demo`)
+### 5.1 Controlled Synthetic Proving Ground (`subcor demo`)
 
 On a 2-layer iterative residual reasoning network (`dim=64`, `max_steps=12`) with an injected structural thinking loop in `layer_1` and an unlearned orthogonal Task Family B:
 
@@ -160,10 +160,10 @@ Zero-perturbation expansion measured `max|y_after - y_before| = 0.0e+00`; `12` u
 ### 5.2 Live Apple M5 Longitudinal Results (`Qwen3.5-0.8B-4bit`)
 
 #### A. Dense Mounting vs. Routed MoE Mounting
-- **Unrouted dense mount (`slaingi mlx-intern`):** `capheos-ops-router-v1` (`81.4 KiB`, `0.0302 bpw`) lifted unseen Ops Router accuracy from **`0.0% → 80.0%`** (`loss 1.7064 → 0.0168`, zero-perturbation `0.0e+00`, rollback logit diff `0.0e+00`), **but** caused General QA to dip **`83.3% → 66.7%`** due to dense activation interference.
-- **Routed MoE layer (`slaingi mlx-moe`):** Mounting BOTH `capheos-ops-router-v1` (`81.4 KiB`) and `capheos-incident-sla-v1` (`81.4 KiB`) behind `MoESkillRouter` achieved **`100.0%` unseen semantic routing accuracy** on both domains and eliminated General QA regression (**`83.3% → 83.3%`**).
+- **Unrouted dense mount (`subcor mlx-intern`):** `capheos-ops-router-v1` (`81.4 KiB`, `0.0302 bpw`) lifted unseen Ops Router accuracy from **`0.0% → 80.0%`** (`loss 1.7064 → 0.0168`, zero-perturbation `0.0e+00`, rollback logit diff `0.0e+00`), **but** caused General QA to dip **`83.3% → 66.7%`** due to dense activation interference.
+- **Routed MoE layer (`subcor mlx-moe`):** Mounting BOTH `capheos-ops-router-v1` (`81.4 KiB`) and `capheos-incident-sla-v1` (`81.4 KiB`) behind `MoESkillRouter` achieved **`100.0%` unseen semantic routing accuracy** on both domains and eliminated General QA regression (**`83.3% → 83.3%`**).
 
-#### B. Standardized `slaingi-core-v1` Growth Progression (AC Power, Post-Optimization)
+#### B. Standardized `subcor-core-v1` Growth Progression (AC Power, Post-Optimization)
 
 | Snapshot | Active Units | Skill Size | Overall | Macro Axis | Locked Anchors | Loop Fail | Avg Latency | Short-Turn TPS |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -180,7 +180,7 @@ Zero-perturbation expansion measured `max|y_after - y_before| = 0.0e+00`; `12` u
 
 Reporting negative outcomes is central to evaluating self-modifying systems honestly:
 
-1. **Single-Layer Live Weight Surgery (`slaingi mlx-surgery`):** Contrastive activation analysis over `Qwen3.5-0.8B-4bit` layers `[7, 11, 15, 19, 22]` cleanly ranked `layers.11.mlp.down_proj` highest (`separation=6.3808`) and produced a `9.6 KiB` (`0.0213 bpw`) rank-1 patch without gradients. However, single-layer rank-1 ablation at a 160-token cap did not shorten verbose word-problem thinking traces (`100% → 100%` limit rate), confirming MIT Experiment 8's finding that real LLM thinking-loop suppression requires multi-layer, column-targeted edits over long-context loops. The locked Conformance Gate rejected promotion and held the unit `dormant`.
+1. **Single-Layer Live Weight Surgery (`subcor mlx-surgery`):** Contrastive activation analysis over `Qwen3.5-0.8B-4bit` layers `[7, 11, 15, 19, 22]` cleanly ranked `layers.11.mlp.down_proj` highest (`separation=6.3808`) and produced a `9.6 KiB` (`0.0213 bpw`) rank-1 patch without gradients. However, single-layer rank-1 ablation at a 160-token cap did not shorten verbose word-problem thinking traces (`100% → 100%` limit rate), confirming MIT Experiment 8's finding that real LLM thinking-loop suppression requires multi-layer, column-targeted edits over long-context loops. The locked Conformance Gate rejected promotion and held the unit `dormant`.
 2. **Cold-Start Binary STE & Scale LR Sensitivity:** Training Binary STE from random signs on 12 examples exhibited high seed variance (`50.0%` at seed 42 vs. `16.7%` at seed 142), and warm-started STE with `ste_lr = 5e-4` destabilized normalized `Sub1Bit` scaling vectors (`loss 0.029 → 8.854`), which the locked Conformance Gate likewise blocked. Restricting `ste_lr <= 8e-5` or using FP32 warm-start followed by alternating `Sub1Bit` factorization restored monotonic convergence (`loss 2.808 → 0.0021`).
 3. **Runaway Hyperparameter Catch:** An early `lr = 4e-3` trial caused baseline General QA collapse (`83.3% → 0.0%`); the locked Conformance Gate automatically rejected the unit and atomic rollback restored exact `0.0e+00` base logits.
 
@@ -188,10 +188,10 @@ Reporting negative outcomes is central to evaluating self-modifying systems hone
 
 ## 6. Limitations & Safety Boundaries
 
-1. **Base Kernel Intelligence Ceiling:** A `0.8B` model augmented with `81 KiB` Skill Units excels at repeatable structured tasks (routing, schemas, policies, triage) but cannot replace frontier models for ambiguous long-horizon reasoning. SLAINGI targets the *Intern* tier—graduating routine work locally while escalating hard cases.
+1. **Base Kernel Intelligence Ceiling:** A `0.8B` model augmented with `81 KiB` Skill Units excels at repeatable structured tasks (routing, schemas, policies, triage) but cannot replace frontier models for ambiguous long-horizon reasoning. SUBCOR targets the *Intern* tier—graduating routine work locally while escalating hard cases.
 2. **Low-Rank Compression Suits Skills, Not Databases:** Binary rank-8 factorization compresses procedural skills cleanly to `0.03 bpw`, but dense factual catalogs belong in external databases, files, and MCP tools rather than weights.
 3. **Flat Cosine Routing at Scale:** Single-centroid gates separated 2 distinct domains at `100%`, but scaling to `50+` overlapping skills will require hierarchical routing (e.g., scoping candidate gates by organizational seat before scoring embeddings).
-4. **Compiled-Artifact Coupling:** Each `weights.slun` payload is mathematically coupled to its base kernel's coordinate system. The **verified trajectory log** is the durable cross-generation "source code"; upgrading the base kernel recompiles Skill Units from verified logs in minutes.
+4. **Compiled-Artifact Coupling:** Each `weights.scun` payload is mathematically coupled to its base kernel's coordinate system. The **verified trajectory log** is the durable cross-generation "source code"; upgrading the base kernel recompiles Skill Units from verified logs in minutes.
 5. **Single-GPU Study Contention:** On consumer hardware, QLoRA study jobs (`~45–90s`) saturate the GPU queue and should run during scheduled off-peak windows.
 
 ---
@@ -203,11 +203,11 @@ All experiments are reproducible from the repository root:
 ```bash
 uv sync --extra dev --extra mlx --python 3.12
 uv run pytest -v                              # 25 deterministic unit & integration tests
-uv run slaingi demo                           # Milestone 1 synthetic proving ground
-uv run --extra mlx slaingi mlx-intern         # Live single-skill QLoRA -> Sub-1-Bit
-uv run --extra mlx slaingi mlx-moe            # Live two-expert Routed MoE
-uv run --extra mlx slaingi mlx-surgery        # Live zero-gradient activation surgery
-uv run --extra mlx slaingi bench run --label day0-base
+uv run subcor demo                           # Milestone 1 synthetic proving ground
+uv run --extra mlx subcor mlx-intern         # Live single-skill QLoRA -> Sub-1-Bit
+uv run --extra mlx subcor mlx-moe            # Live two-expert Routed MoE
+uv run --extra mlx subcor mlx-surgery        # Live zero-gradient activation surgery
+uv run --extra mlx subcor bench run --label day0-base
 ```
 
 Immediate future work includes: (i) multi-layer column-masked live surgery over long-context thinking loops, (ii) hierarchical seat-scoped MoE routing tested across `20–50` accumulated company Skill Units, (iii) live multi-week token-cost and autonomy telemetry inside CaPheOS deployments, and (iv) cross-company portability trials exporting learned `81 KiB` Skill Units between independent companies.

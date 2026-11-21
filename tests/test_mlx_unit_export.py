@@ -10,18 +10,18 @@ import pytest
 mx = pytest.importorskip("mlx.core")
 nn = pytest.importorskip("mlx.nn")
 
-from slaingi.backends.mlx_kernel import SlaingiMLXLinear, export_mlx_lora_safetensors  # noqa: E402
-from slaingi.expansion import LowRankAdapter  # noqa: E402
-from slaingi.types import AdaptationMode, DeltaEncoding  # noqa: E402
-from slaingi.units import SkillUnitRegistry, build_layer_delta  # noqa: E402
+from subcor.backends.mlx_kernel import SubcorMLXLinear, export_mlx_lora_safetensors  # noqa: E402
+from subcor.expansion import LowRankAdapter  # noqa: E402
+from subcor.types import AdaptationMode, DeltaEncoding  # noqa: E402
+from subcor.units import SkillUnitRegistry, build_layer_delta  # noqa: E402
 
 
-def test_slaingi_mlx_linear_zero_perturbation_recording_and_rollback() -> None:
+def test_subcor_mlx_linear_zero_perturbation_recording_and_rollback() -> None:
     base_lin = nn.Linear(64, 32, bias=False)
     q_lin = nn.QuantizedLinear.from_linear(base_lin, group_size=32, bits=4)
     mx.eval(q_lin.parameters())
 
-    wrapped = SlaingiMLXLinear(q_lin, layer_name="layers.0.mlp.down_proj")
+    wrapped = SubcorMLXLinear(q_lin, layer_name="layers.0.mlp.down_proj")
     assert wrapped.shape == (32, 64)
 
     x = mx.random.normal((2, 5, 64))
@@ -40,7 +40,7 @@ def test_slaingi_mlx_linear_zero_perturbation_recording_and_rollback() -> None:
             target = y_base + 0.5
             wrapped.s_out = mx.full((32,), 0.1, dtype=mx.float32)
 
-            def loss_fn(m: SlaingiMLXLinear, tgt: mx.array = target) -> mx.array:
+            def loss_fn(m: SubcorMLXLinear, tgt: mx.array = target) -> mx.array:
                 return mx.mean((m(x) - tgt) ** 2)
 
             _, grads = nn.value_and_grad(wrapped, loss_fn)(wrapped)

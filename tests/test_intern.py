@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from slaingi.intern import TextTrajectory, TextTrajectoryStore, ngram_repetition_ratio
-from slaingi.types import VerificationError, VerificationEvidence
+from subcor.intern import TextTrajectory, TextTrajectoryStore, ngram_repetition_ratio
+from subcor.types import VerificationError, VerificationEvidence
 
 
 def test_ngram_repetition_ratio_distinguishes_looping_from_unique_text() -> None:

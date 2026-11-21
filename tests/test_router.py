@@ -7,10 +7,10 @@ from pathlib import Path
 
 import numpy as np
 
-from slaingi.expansion import LowRankAdapter
-from slaingi.router import MoESkillRouter, RouterGate
-from slaingi.types import AdaptationMode, DeltaEncoding
-from slaingi.units import SkillUnitRegistry, build_layer_delta
+from subcor.expansion import LowRankAdapter
+from subcor.router import MoESkillRouter, RouterGate
+from subcor.types import AdaptationMode, DeltaEncoding
+from subcor.units import SkillUnitRegistry, build_layer_delta
 
 
 def test_moe_router_routes_two_skills_and_falls_back_to_base_on_general() -> None:
@@ -102,5 +102,5 @@ def test_router_gate_persists_in_registry_and_exports_in_capheos_bundle(tmp_path
 
     bundle = registry.export_capheos_unit("routed-ops-v1", tmp_path / "capheos")
     manifest = json.loads((bundle / "module.json").read_text(encoding="utf-8"))
-    assert manifest["slaingi"]["routerGateFile"] == "router_gate.json"
+    assert manifest["subcor"]["routerGateFile"] == "router_gate.json"
     assert (bundle / "router_gate.json").exists()

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from slaingi.expansion import ElasticLinear, LowRankAdapter
+from subcor.expansion import ElasticLinear, LowRankAdapter
 
 
 def test_frozen_base_cannot_be_mutated() -> None:

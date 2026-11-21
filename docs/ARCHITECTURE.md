@@ -1,8 +1,8 @@
-# SLAINGI Architecture & Behavioral Specification
+# SUBCOR Architecture & Behavioral Specification
 
 ## 1. Purpose & Design Thesis
 
-SLAINGI is a self-learning adaptation layer designed to run on consumer hardware (starting with 16 GB Apple Silicon) and integrate cleanly with governed agent operating systems such as **CaPheOS**.
+SUBCOR is a self-learning adaptation layer designed to run on consumer hardware (starting with 16 GB Apple Silicon) and integrate cleanly with governed agent operating systems such as **CaPheOS**.
 
 Three hard engineering constraints shape the architecture:
 
@@ -82,8 +82,8 @@ CONFORMANT | ENABLED ──(export)────────► CaPheOS module.js
 
 ### 2.6 Apple Silicon Frozen Kernel & Live Intern Loop (`MLXKernel`, `TextTrajectoryStore`)
 - **Actor:** Intern seat running a compact quantized open-weight LLM (default `mlx-community/Qwen3.5-0.8B-4bit`, 652 MB, or any `mlx-lm` checkpoint such as Gemma 4 E2B QAT).
-- **Object:** Frozen `nn.QuantizedLinear` projections wrapped in `SlaingiMLXLinear` + append-only `TextTrajectoryStore`.
-- **Trigger:** Live inference (`generate_with_trace`), zero-gradient contrastive weight-space surgery (`slaingi mlx-surgery`), or on-policy QLoRA distillation (`slaingi mlx-intern`).
+- **Object:** Frozen `nn.QuantizedLinear` projections wrapped in `SubcorMLXLinear` + append-only `TextTrajectoryStore`.
+- **Trigger:** Live inference (`generate_with_trace`), zero-gradient contrastive weight-space surgery (`subcor mlx-surgery`), or on-policy QLoRA distillation (`subcor mlx-intern`).
 - **Observable contract:**
   - Base quantized model parameters remain frozen (`model.freeze()`) at all times; adapters are hot-swapped via `mount_unit` / `unmount_unit` with SHA-256 verification.
   - Live per-layer mean hidden-state activations are captured off-graph when `capture_activations=True` with zero overhead when disabled.
@@ -100,14 +100,14 @@ CONFORMANT | ENABLED ──(export)────────► CaPheOS module.js
   - Each `RouterGate` is fitted analytically from verified positive vs. negative frozen-base embeddings (zero router backprop, zero small-batch router collapse).
   - Routing uses raw user prompt embeddings (no task-specific system prompt leakage).
   - When no expert clears its calibrated threshold, `RoutingDecision.fell_back_to_base` is `True` and 0 experts are mounted — producing bit-identical frozen-base behavior (**0.0% general regression**).
-  - Exported CaPheOS format-2 bundles include both `weights.slun` and `router_gate.json`.
+  - Exported CaPheOS format-2 bundles include both `weights.scun` and `router_gate.json`.
 
 ### 2.8 Standardized Longitudinal Benchmark System (`BenchmarkSuite`, `BenchmarkLedger`)
 - **Actor:** Operator, CI, or automated post-promotion audit duty.
 - **Object:** Immutable versioned `BenchmarkSuite` (with SHA-256 `suite_digest`) + append-only `BenchmarkLedger` (`history.jsonl`) + generated Markdown Growth Report.
-- **Trigger:** `slaingi bench run` against either local MLX state or any live OpenAI-compatible HTTP endpoint (including `slaingi serve` or frontier teacher baselines).
+- **Trigger:** `subcor bench run` against either local MLX state or any live OpenAI-compatible HTTP endpoint (including `subcor serve` or frontier teacher baselines).
 - **Observable contract:**
-  - Built-in `slaingi-core-v1` evaluates 5 functional axes: locked anchors (`general_reasoning`, `instruction_discipline`), general `structured_json`, and acquired domain skills (`domain_ops_routing`, `domain_noc_triage`).
+  - Built-in `subcor-core-v1` evaluates 5 functional axes: locked anchors (`general_reasoning`, `instruction_discipline`), general `structured_json`, and acquired domain skills (`domain_ops_routing`, `domain_noc_triage`).
   - Records exact active Skill Units, SHA-256 digests, total adapter bytes, `bits/weight`, per-axis pass rates, base-fallback rates, token-limit loop rate, latency, and tok/s.
   - `compare_snapshots(baseline, current)` checks suite digest equality and flags any regression on locked anchor axes.
 
@@ -116,12 +116,12 @@ CONFORMANT | ENABLED ──(export)────────► CaPheOS module.js
 ## 3. Architecture Decision Records (ADRs)
 
 ### ADR-001: Keep the Core Engine Dependency-Minimal (`numpy` + stdlib)
-- **Decision:** The core `slaingi` package depends only on `numpy` and Python's standard library. Heavy inference/training backends (`mlx`, `mlx-lm`, `llama.cpp` HTTP client, `torch`) live behind optional extras and clean backend interfaces.
+- **Decision:** The core `subcor` package depends only on `numpy` and Python's standard library. Heavy inference/training backends (`mlx`, `mlx-lm`, `llama.cpp` HTTP client, `torch`) live behind optional extras and clean backend interfaces.
 - **Tradeoff:** We implement alternating binary factorization, contrastive SVD surgery, and STE low-rank micro-batch updates directly in `numpy` rather than relying on PyTorch autograd for the core engine.
 - **Why:** Runs identically and deterministically in <1 second in CI and on any developer machine, stays true to CaPheOS's "one dependency is a decision" discipline, and prevents locking the architecture to one hardware vendor before Milestone 2.
 
 ### ADR-002: Separate Process / Out-of-Process Model Serving Boundary
-- **Decision:** SLAINGI never embeds Python/ML runtimes inside a CaPheOS Node process. In production (Milestone 2+), the frozen base model runs in a dedicated local inference server (`mlx_lm.server` or `llama-server`), and SLAINGI manages adapter/unit lifecycle over a typed provider boundary.
+- **Decision:** SUBCOR never embeds Python/ML runtimes inside a CaPheOS Node process. In production (Milestone 2+), the frozen base model runs in a dedicated local inference server (`mlx_lm.server` or `llama-server`), and SUBCOR manages adapter/unit lifecycle over a typed provider boundary.
 - **Why:** Preserves CaPheOS's read-only immutable Node container and keeps GPU/unified-memory pressure isolated on the local host (crucial on 16 GB Apple Silicon).
 
 ### ADR-003: Dual-Mode Adaptation (Surgery + Expansion) Rather Than Pure Weight-Editing
@@ -137,5 +137,5 @@ CONFORMANT | ENABLED ──(export)────────► CaPheOS module.js
 - **Why:** Fast iteration cycles (<60s end-to-end on a 16 GB Apple Silicon laptop), low memory footprint alongside a running CaPheOS company, and high compression leverage when domain skills live in modular `< 0.05` bits/weight Skill Units rather than bloating a single monolithic checkpoint.
 
 ### ADR-006: Tiny Dense Shared Core + Routed MoE Skill Units Over Native Small MoE
-- **Decision:** Implement MoE routing at the SLAINGI Skill Unit layer (`MoESkillRouter`) over a frozen dense 0.8B–4B shared core, rather than requiring a 26B–30B native MoE base checkpoint.
+- **Decision:** Implement MoE routing at the SUBCOR Skill Unit layer (`MoESkillRouter`) over a frozen dense 0.8B–4B shared core, rather than requiring a 26B–30B native MoE base checkpoint.
 - **Why:** Native MoE checkpoints still keep all experts in unified RAM (~14–16 GB at 4-bit), whereas a frozen 652 MB shared core + ~81 KiB routed Sub-1-Bit Skill Units fits 1,000+ skills inside ~1.5 GB RAM with zero cross-skill interference and zero general-knowledge regression.

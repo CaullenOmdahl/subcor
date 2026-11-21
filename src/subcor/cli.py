@@ -1,4 +1,4 @@
-"""Command-line interface for SLAINGI."""
+"""Command-line interface for SUBCOR."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import os
 import tempfile
 from pathlib import Path
 
-from slaingi.proving_ground import EvalMetrics, ProvingGroundReport, run_proving_ground
-from slaingi.units import SkillUnitRegistry
+from subcor.proving_ground import EvalMetrics, ProvingGroundReport, run_proving_ground
+from subcor.units import SkillUnitRegistry
 
 
 def _fmt_metrics(m: EvalMetrics) -> str:
@@ -22,7 +22,7 @@ def _fmt_metrics(m: EvalMetrics) -> str:
 
 def _print_report(report: ProvingGroundReport) -> None:
     print("=========================================================================")
-    print(" SLAINGI — Milestone 1 Proving Ground Report")
+    print(" SUBCOR — Milestone 1 Proving Ground Report")
     print("=========================================================================")
     print("\n[0] Baseline (Frozen Base Kernel)")
     print(f"    Family A Clean : {_fmt_metrics(report.baseline_clean)}")
@@ -71,11 +71,11 @@ def _print_report(report: ProvingGroundReport) -> None:
 
 def _run_mlx_intern_cli(args: argparse.Namespace) -> int:
     try:
-        from slaingi.live_loop import run_live_intern_distillation
+        from subcor.live_loop import run_live_intern_distillation
     except ImportError as exc:
         raise SystemExit(
-            "MLX extra is required for 'slaingi mlx-intern'. "
-            "Run with: uv run --extra mlx slaingi mlx-intern"
+            "MLX extra is required for 'subcor mlx-intern'. "
+            "Run with: uv run --extra mlx subcor mlx-intern"
         ) from exc
 
     def execute(work_dir: Path) -> None:
@@ -91,7 +91,7 @@ def _run_mlx_intern_cli(args: argparse.Namespace) -> int:
             seed=args.seed,
         )
         print("=========================================================================")
-        print(f" SLAINGI — Live Apple Silicon MLX Intern Report ({report.model_id})")
+        print(f" SUBCOR — Live Apple Silicon MLX Intern Report ({report.model_id})")
         print("=========================================================================")
         print(f"Target Layers      : {', '.join(report.target_layers)}")
         print(f"Verified Gate      : filtered {report.unverified_filtered_count} unverified traces")
@@ -131,7 +131,7 @@ def _run_mlx_intern_cli(args: argparse.Namespace) -> int:
         print("=========================================================================")
 
     if args.work_dir is None:
-        with tempfile.TemporaryDirectory(prefix="slaingi-mlx-intern-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="subcor-mlx-intern-") as tmp:
             execute(Path(tmp))
     else:
         execute(args.work_dir)
@@ -140,11 +140,11 @@ def _run_mlx_intern_cli(args: argparse.Namespace) -> int:
 
 def _run_mlx_surgery_cli(args: argparse.Namespace) -> int:
     try:
-        from slaingi.live_loop import run_live_weight_surgery
+        from subcor.live_loop import run_live_weight_surgery
     except ImportError as exc:
         raise SystemExit(
-            "MLX extra is required for 'slaingi mlx-surgery'. "
-            "Run with: uv run --extra mlx slaingi mlx-surgery"
+            "MLX extra is required for 'subcor mlx-surgery'. "
+            "Run with: uv run --extra mlx subcor mlx-surgery"
         ) from exc
 
     def execute(work_dir: Path) -> None:
@@ -154,7 +154,7 @@ def _run_mlx_surgery_cli(args: argparse.Namespace) -> int:
             max_tokens=args.max_tokens,
         )
         print("=========================================================================")
-        print(f" SLAINGI — Live Zero-Gradient Weight-Space Surgery ({report.model_id})")
+        print(f" SUBCOR — Live Zero-Gradient Weight-Space Surgery ({report.model_id})")
         print("=========================================================================")
         print("Contrastive Layer Ranking (zero gradient descent):")
         for name, score in report.ranked_layers:
@@ -179,7 +179,7 @@ def _run_mlx_surgery_cli(args: argparse.Namespace) -> int:
         print("=========================================================================")
 
     if args.work_dir is None:
-        with tempfile.TemporaryDirectory(prefix="slaingi-mlx-surgery-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="subcor-mlx-surgery-") as tmp:
             execute(Path(tmp))
     else:
         execute(args.work_dir)
@@ -188,11 +188,11 @@ def _run_mlx_surgery_cli(args: argparse.Namespace) -> int:
 
 def _run_mlx_moe_cli(args: argparse.Namespace) -> int:
     try:
-        from slaingi.live_loop import run_live_moe_multi_skill
+        from subcor.live_loop import run_live_moe_multi_skill
     except ImportError as exc:
         raise SystemExit(
-            "MLX extra is required for 'slaingi mlx-moe'. "
-            "Run with: uv run --extra mlx slaingi mlx-moe"
+            "MLX extra is required for 'subcor mlx-moe'. "
+            "Run with: uv run --extra mlx subcor mlx-moe"
         ) from exc
 
     def execute(work_dir: Path) -> None:
@@ -207,7 +207,7 @@ def _run_mlx_moe_cli(args: argparse.Namespace) -> int:
             seed=args.seed,
         )
         print("=========================================================================")
-        print(f" SLAINGI — Routed MoE Skill Layer Report ({report.model_id})")
+        print(f" SUBCOR — Routed MoE Skill Layer Report ({report.model_id})")
         print("=========================================================================")
         print(f"Routing Tap Layer  : {report.tap_layer} (invariant frozen shared core)")
         print(
@@ -245,7 +245,7 @@ def _run_mlx_moe_cli(args: argparse.Namespace) -> int:
         print("=========================================================================")
 
     if args.work_dir is None:
-        with tempfile.TemporaryDirectory(prefix="slaingi-mlx-moe-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="subcor-mlx-moe-") as tmp:
             execute(Path(tmp))
     else:
         execute(args.work_dir)
@@ -253,12 +253,12 @@ def _run_mlx_moe_cli(args: argparse.Namespace) -> int:
 
 
 def _run_serve_cli(args: argparse.Namespace) -> int:
-    from slaingi.server import MLXServingAdapter, SlaingiHTTPServer, TenantManager
+    from subcor.server import MLXServingAdapter, SubcorHTTPServer, TenantManager
 
-    api_key = args.api_key or os.environ.get("SLAINGI_API_KEY")
+    api_key = args.api_key or os.environ.get("SUBCOR_API_KEY")
     if args.host not in ("127.0.0.1", "localhost", "::1") and not api_key:
         print(
-            "WARNING: Binding to a non-loopback address without --api-key / SLAINGI_API_KEY. "
+            "WARNING: Binding to a non-loopback address without --api-key / SUBCOR_API_KEY. "
             "Set a bearer key before exposing on LAN."
         )
 
@@ -267,10 +267,10 @@ def _run_serve_cli(args: argparse.Namespace) -> int:
     print(f"Loading frozen base kernel '{args.model}' ...")
     kernel = MLXServingAdapter(model_id=args.model)
     manager = TenantManager(state_dir=state_dir, kernel=kernel, initial_tenants=tenants)
-    server = SlaingiHTTPServer((args.host, args.port), manager=manager, api_key=api_key)
+    server = SubcorHTTPServer((args.host, args.port), manager=manager, api_key=api_key)
 
     print("=========================================================================")
-    print(" SLAINGI — Multi-Tenant Server Ready")
+    print(" SUBCOR — Multi-Tenant Server Ready")
     print("=========================================================================")
     print(f"Listen         : http://{args.host}:{args.port}")
     print(f"OpenAI BaseURL : http://{args.host}:{args.port}/v1")
@@ -282,14 +282,14 @@ def _run_serve_cli(args: argparse.Namespace) -> int:
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down SLAINGI server cleanly.")
+        print("\nShutting down SUBCOR server cleanly.")
     finally:
         server.server_close()
     return 0
 
 
 def _run_bench_cli(args: argparse.Namespace) -> int:
-    from slaingi.benchmark import (
+    from subcor.benchmark import (
         BenchmarkLedger,
         BenchmarkSuite,
         compare_snapshots,
@@ -313,7 +313,7 @@ def _run_bench_cli(args: argparse.Namespace) -> int:
     if args.bench_cmd == "run":
         suite = BenchmarkSuite.from_json_file(args.suite) if args.suite else core_v1_suite()
         if args.endpoint:
-            api_key = args.api_key or os.environ.get("SLAINGI_API_KEY")
+            api_key = args.api_key or os.environ.get("SUBCOR_API_KEY")
             snap = run_benchmark_http(
                 suite=suite,
                 base_url=args.endpoint,
@@ -322,7 +322,7 @@ def _run_bench_cli(args: argparse.Namespace) -> int:
                 api_key=api_key,
             )
         else:
-            from slaingi.server import MLXServingAdapter, TenantManager
+            from subcor.server import MLXServingAdapter, TenantManager
 
             kernel = MLXServingAdapter(model_id=args.model)
             tenant_ctx = None
@@ -341,7 +341,7 @@ def _run_bench_cli(args: argparse.Namespace) -> int:
 
         ledger.append(snap)
         print("=========================================================================")
-        print(f" SLAINGI Benchmark Snapshot: {snap.label}")
+        print(f" SUBCOR Benchmark Snapshot: {snap.label}")
         print("=========================================================================")
         print(
             f"Suite         : {snap.suite_id}@{snap.suite_version} (sha256={snap.suite_digest[:12]})"
@@ -400,8 +400,8 @@ def _run_bench_cli(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="slaingi",
-        description="SLAINGI — Governed self-learning runtime over frozen quantized kernels.",
+        prog="subcor",
+        description="SUBCOR — Governed self-learning runtime over frozen quantized kernels.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -470,7 +470,7 @@ def main(argv: list[str] | None = None) -> int:
 
     serve_cmd = sub.add_parser(
         "serve",
-        help="Run the multi-tenant OpenAI-compatible & governed SLAINGI HTTP server.",
+        help="Run the multi-tenant OpenAI-compatible & governed SUBCOR HTTP server.",
     )
     serve_cmd.add_argument(
         "--model",
@@ -488,7 +488,7 @@ def main(argv: list[str] | None = None) -> int:
     serve_cmd.add_argument(
         "--state-dir",
         type=Path,
-        default=Path.home() / ".local" / "share" / "slaingi",
+        default=Path.home() / ".local" / "share" / "subcor",
         help="Persistent directory for per-tenant Skill Units and trajectories.",
     )
     serve_cmd.add_argument(
@@ -502,7 +502,7 @@ def main(argv: list[str] | None = None) -> int:
         "--api-key",
         type=str,
         default=None,
-        help="Optional bearer API key (or set SLAINGI_API_KEY env var).",
+        help="Optional bearer API key (or set SUBCOR_API_KEY env var).",
     )
 
     bench_cmd = sub.add_parser(
@@ -521,7 +521,7 @@ def main(argv: list[str] | None = None) -> int:
     b_run.add_argument(
         "--ledger",
         type=Path,
-        default=Path.home() / ".local" / "share" / "slaingi" / "benchmarks" / "history.jsonl",
+        default=Path.home() / ".local" / "share" / "subcor" / "benchmarks" / "history.jsonl",
     )
     b_run.add_argument("--suite", type=Path, default=None, help="Optional custom JSON suite file.")
     b_run.add_argument(
@@ -533,7 +533,7 @@ def main(argv: list[str] | None = None) -> int:
     b_run.add_argument("--api-key", type=str, default=None)
     b_run.add_argument("--model", type=str, default="mlx-community/Qwen3.5-0.8B-4bit")
     b_run.add_argument(
-        "--state-dir", type=Path, default=Path.home() / ".local" / "share" / "slaingi"
+        "--state-dir", type=Path, default=Path.home() / ".local" / "share" / "subcor"
     )
     b_run.add_argument(
         "--tenant", type=str, default=None, help="Tenant ID when benchmarking local MLX state."
@@ -546,7 +546,7 @@ def main(argv: list[str] | None = None) -> int:
     b_rep.add_argument(
         "--ledger",
         type=Path,
-        default=Path.home() / ".local" / "share" / "slaingi" / "benchmarks" / "history.jsonl",
+        default=Path.home() / ".local" / "share" / "subcor" / "benchmarks" / "history.jsonl",
     )
     b_rep.add_argument("--out", type=Path, default=None, help="Write Markdown report to file.")
 
@@ -557,12 +557,12 @@ def main(argv: list[str] | None = None) -> int:
     b_cmp.add_argument(
         "--ledger",
         type=Path,
-        default=Path.home() / ".local" / "share" / "slaingi" / "benchmarks" / "history.jsonl",
+        default=Path.home() / ".local" / "share" / "subcor" / "benchmarks" / "history.jsonl",
     )
 
     b_exp = bench_sub.add_parser(
         "export-suite",
-        help="Export the canonical built-in slaingi-core-v1 benchmark suite to JSON.",
+        help="Export the canonical built-in subcor-core-v1 benchmark suite to JSON.",
     )
     b_exp.add_argument("--out", type=Path, required=True)
 
@@ -570,13 +570,13 @@ def main(argv: list[str] | None = None) -> int:
         "inspect",
         help="Inspect registered Skill Units and verify SHA-256 integrity in a unit store.",
     )
-    inspect_cmd.add_argument("units_dir", type=Path, help="Path to a SLAINGI units directory.")
+    inspect_cmd.add_argument("units_dir", type=Path, help="Path to a SUBCOR units directory.")
 
     export_cmd = sub.add_parser(
         "export-capheos",
         help="Export a CONFORMANT or ENABLED Skill Unit as a CaPheOS format-2 bundle.",
     )
-    export_cmd.add_argument("units_dir", type=Path, help="Path to a SLAINGI units directory.")
+    export_cmd.add_argument("units_dir", type=Path, help="Path to a SUBCOR units directory.")
     export_cmd.add_argument("unit_id", type=str, help="Unit ID to export.")
     export_cmd.add_argument("destination", type=Path, help="Destination directory.")
 
@@ -584,7 +584,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "demo":
         if args.work_dir is None:
-            with tempfile.TemporaryDirectory(prefix="slaingi-demo-") as tmp:
+            with tempfile.TemporaryDirectory(prefix="subcor-demo-") as tmp:
                 report = run_proving_ground(
                     Path(tmp),
                     export_capheos_dir=args.export_capheos,

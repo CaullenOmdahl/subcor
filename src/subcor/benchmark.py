@@ -1,17 +1,17 @@
-"""Standardized longitudinal benchmark system for documenting SLAINGI functional growth.
+"""Standardized longitudinal benchmark system for documenting SUBCOR functional growth.
 
 Provides:
   - Versioned, content-hashed BenchmarkSuites (SHA-256 suite_digest prevents
     moving goalposts across snapshots).
   - Deterministic graders: exact_json, json_keys, numeric, contains, regex.
-  - Built-in standardized `slaingi-core-v1` suite covering 5 functional axes:
+  - Built-in standardized `subcor-core-v1` suite covering 5 functional axes:
       1. general_reasoning      (locked non-regression anchor)
       2. instruction_discipline (locked non-regression anchor: concise stopping, no loops)
       3. structured_json        (strict JSON tool/schema formatting)
       4. domain_ops_routing     (CaPheOS company ops governance routing)
       5. domain_noc_triage      (CaPheOS overnight NOC incident SLA policy)
   - Execution against EITHER a local ServingKernel/TenantManager OR any live
-    OpenAI-compatible HTTP endpoint (including `slaingi serve` or frontier
+    OpenAI-compatible HTTP endpoint (including `subcor serve` or frontier
     teacher models for Teacher-vs-Intern gap tracking).
   - Append-only JSONL BenchmarkLedger + diff/regression analyzer + Markdown
     longitudinal Growth Report generator.
@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from slaingi.server import ServingKernel, TenantContext
+from subcor.server import ServingKernel, TenantContext
 
 LOCKED_ANCHOR_AXES: frozenset[str] = frozenset({"general_reasoning", "instruction_discipline"})
 
@@ -341,7 +341,7 @@ class BenchmarkSnapshot:
 
 
 def core_v1_suite() -> BenchmarkSuite:
-    """Built-in standardized 5-axis SLAINGI functional growth benchmark (`slaingi-core-v1`)."""
+    """Built-in standardized 5-axis SUBCOR functional growth benchmark (`subcor-core-v1`)."""
     ops_sys = (
         "You are the CaPheOS Intern router. Reply ONLY with compact JSON containing "
         'keys "seat", "gate", and "code". No prose, no markdown.'
@@ -567,7 +567,7 @@ def core_v1_suite() -> BenchmarkSuite:
     ]
 
     return BenchmarkSuite(
-        suite_id="slaingi-core-v1",
+        suite_id="subcor-core-v1",
         version="1.0.0",
         description=(
             "Standardized 5-axis functional growth suite measuring general reasoning, "
@@ -733,7 +733,7 @@ def run_benchmark_http(
     api_key: str | None = None,
     timeout: float = 60.0,
 ) -> BenchmarkSnapshot:
-    """Run a BenchmarkSuite against any OpenAI-compatible HTTP endpoint (e.g. `slaingi serve`)."""
+    """Run a BenchmarkSuite against any OpenAI-compatible HTTP endpoint (e.g. `subcor serve`)."""
     root = base_url.rstrip("/")
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if api_key:
@@ -741,10 +741,10 @@ def run_benchmark_http(
 
     tenant_id: str | None = None
     active_units: list[dict[str, Any]] = []
-    if model.startswith("slaingi/") and model != "slaingi/base":
+    if model.startswith("subcor/") and model != "subcor/base":
         tenant_id = model.split("/", 1)[1]
-        # Query SLAINGI control plane if present to record exact active Skill Units.
-        units_url = f"{root}/slaingi/tenants/{tenant_id}/units"
+        # Query SUBCOR control plane if present to record exact active Skill Units.
+        units_url = f"{root}/subcor/tenants/{tenant_id}/units"
         try:
             req_u = urllib.request.Request(units_url, headers=headers, method="GET")
             with urllib.request.urlopen(req_u, timeout=10) as resp:
@@ -796,8 +796,8 @@ def run_benchmark_http(
         hit_limit = choice.get("finish_reason") == "length"
         usage = body.get("usage") or {}
         comp_tokens = int(usage.get("completion_tokens", max(1, len(text.split()))))
-        slaingi_meta = body.get("slaingi") or {}
-        routed = tuple(str(u) for u in slaingi_meta.get("selected_units", []))
+        subcor_meta = body.get("subcor") or {}
+        routed = tuple(str(u) for u in subcor_meta.get("selected_units", []))
 
         passed = grade_response(case, text, hit_token_limit=hit_limit)
         results.append(
@@ -920,7 +920,7 @@ def compare_snapshots(
 def render_markdown_report(snapshots: list[BenchmarkSnapshot]) -> str:
     """Render a longitudinal Markdown Functional Growth Report from ordered snapshots."""
     if not snapshots:
-        return "# SLAINGI Functional Growth Report\n\nNo benchmark snapshots recorded yet.\n"
+        return "# SUBCOR Functional Growth Report\n\nNo benchmark snapshots recorded yet.\n"
 
     first = snapshots[0]
     latest = snapshots[-1]
@@ -932,7 +932,7 @@ def render_markdown_report(snapshots: list[BenchmarkSnapshot]) -> str:
                 axes.append(ax)
 
     lines: list[str] = [
-        "# SLAINGI Functional Growth Report",
+        "# SUBCOR Functional Growth Report",
         "",
         f"- **Suite:** `{first.suite_id}@{first.suite_version}` (`sha256:{first.suite_digest[:12]}`)",
         f"- **Model:** `{latest.model_id}`"

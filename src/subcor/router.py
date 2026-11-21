@@ -1,4 +1,4 @@
-"""Activation-space MoE Skill Router for SLAINGI ("Shared Dense Core + Routed Units").
+"""Activation-space MoE Skill Router for SUBCOR ("Shared Dense Core + Routed Units").
 
 Instead of stacking dense adapters unconditionally (which causes cross-skill
 interference and general-knowledge regression on small models), each Skill Unit

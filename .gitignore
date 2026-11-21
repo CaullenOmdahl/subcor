@@ -10,7 +10,7 @@ build/
 *.egg-info/
 
 # Local runtime state & model caches
-.slaingi/
+.subcor/
 models/
 artifacts/
 *.gguf

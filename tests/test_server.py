@@ -1,4 +1,4 @@
-"""End-to-end tests for the multi-tenant SLAINGI OpenAI + Control Plane HTTP server."""
+"""End-to-end tests for the multi-tenant SUBCOR OpenAI + Control Plane HTTP server."""
 
 from __future__ import annotations
 
@@ -12,14 +12,14 @@ from typing import Any
 import numpy as np
 import pytest
 
-from slaingi.router import MoESkillRouter, RoutingDecision
-from slaingi.server import (
+from subcor.router import MoESkillRouter, RoutingDecision
+from subcor.server import (
     InferenceResult,
-    SlaingiHTTPServer,
+    SubcorHTTPServer,
     TenantManager,
     build_dummy_delta,
 )
-from slaingi.units import LayerDeltaPayload, SkillUnitRegistry
+from subcor.units import LayerDeltaPayload, SkillUnitRegistry
 
 
 class _FakeMultiSkillKernel:
@@ -132,7 +132,7 @@ def test_multi_tenant_server_isolation_study_governance_streaming_and_rollback(
         kernel=kernel,
         initial_tenants=("company-alpha", "company-beta"),
     )
-    server = SlaingiHTTPServer(("127.0.0.1", 0), manager=manager, api_key="secret-key")
+    server = SubcorHTTPServer(("127.0.0.1", 0), manager=manager, api_key="secret-key")
     host, port = server.server_address
     base_url = f"http://{host}:{port}"
 
@@ -150,17 +150,17 @@ def test_multi_tenant_server_isolation_study_governance_streaming_and_rollback(
         code, models, _ = _http_json(f"{base_url}/v1/models")
         assert code == 200
         model_ids = {m["id"] for m in models["data"]}
-        assert {"slaingi/base", "slaingi/company-alpha", "slaingi/company-beta"} <= model_ids
+        assert {"subcor/base", "subcor/company-alpha", "subcor/company-beta"} <= model_ids
 
         # Ollama-compatible /api/tags discovery endpoint (for StarNet's built-in `ollama` provider).
         code, tags, _ = _http_json(f"{base_url}/api/tags")
         assert code == 200
         tag_names = {m["name"] for m in tags["models"]}
-        assert {"slaingi/base", "slaingi/company-alpha", "slaingi/company-beta"} <= tag_names
+        assert {"subcor/base", "subcor/company-alpha", "subcor/company-beta"} <= tag_names
 
         # 2. Ingest verified + unverified trajectories into company-alpha ONLY.
         code, ingest, _ = _http_json(
-            f"{base_url}/v1/slaingi/tenants/company-alpha/trajectories",
+            f"{base_url}/v1/subcor/tenants/company-alpha/trajectories",
             method="POST",
             body={
                 "trajectories": [
@@ -186,7 +186,7 @@ def test_multi_tenant_server_isolation_study_governance_streaming_and_rollback(
 
         # 3. Study cycle for company-alpha -> CONFORMANT (not yet enabled!).
         code, study, _ = _http_json(
-            f"{base_url}/v1/slaingi/tenants/company-alpha/study",
+            f"{base_url}/v1/subcor/tenants/company-alpha/study",
             method="POST",
             body={
                 "unit_id": "ops-skill-v1",
@@ -206,14 +206,14 @@ def test_multi_tenant_server_isolation_study_governance_streaming_and_rollback(
 
         # 4. Self-approval blocked (403); independent risk seat promotes to ENABLED.
         code, _, _ = _http_json(
-            f"{base_url}/v1/slaingi/tenants/company-alpha/units/ops-skill-v1/promote",
+            f"{base_url}/v1/subcor/tenants/company-alpha/units/ops-skill-v1/promote",
             method="POST",
             body={"approver": "tools"},
         )
         assert code == 403
 
         code, promoted, _ = _http_json(
-            f"{base_url}/v1/slaingi/tenants/company-alpha/units/ops-skill-v1/promote",
+            f"{base_url}/v1/subcor/tenants/company-alpha/units/ops-skill-v1/promote",
             method="POST",
             body={"approver": "risk"},
         )
@@ -228,45 +228,45 @@ def test_multi_tenant_server_isolation_study_governance_streaming_and_rollback(
             f"{base_url}/v1/chat/completions",
             method="POST",
             body={
-                "model": "slaingi/company-alpha",
+                "model": "subcor/company-alpha",
                 "messages": [{"role": "user", "content": "Event: Vendor invoice #555 over cap"}],
             },
         )
         assert code == 200
         assert "FIN-CAP" in alpha_ops["choices"][0]["message"]["content"]
-        assert alpha_ops["slaingi"]["selected_units"] == ["ops-skill-v1"]
-        assert hdrs.get("X-SLAINGI-Routed-Units") == "ops-skill-v1"
+        assert alpha_ops["subcor"]["selected_units"] == ["ops-skill-v1"]
+        assert hdrs.get("X-SUBCOR-Routed-Units") == "ops-skill-v1"
 
         code, alpha_gen, _ = _http_json(
             f"{base_url}/v1/chat/completions",
             method="POST",
             body={
-                "model": "slaingi/company-alpha",
+                "model": "subcor/company-alpha",
                 "messages": [{"role": "user", "content": "What is 12 * 12?"}],
             },
         )
         assert code == 200
         assert alpha_gen["choices"][0]["message"]["content"] == "144"
-        assert alpha_gen["slaingi"]["fell_back_to_base"] is True
+        assert alpha_gen["subcor"]["fell_back_to_base"] is True
 
         code, beta_ops, _ = _http_json(
             f"{base_url}/v1/chat/completions",
             method="POST",
             body={
-                "model": "slaingi/company-beta",
+                "model": "subcor/company-beta",
                 "messages": [{"role": "user", "content": "Event: Vendor invoice #555 over cap"}],
             },
         )
         assert code == 200
         assert beta_ops["choices"][0]["message"]["content"] == "untrained-base-response"
-        assert beta_ops["slaingi"]["fell_back_to_base"] is True
+        assert beta_ops["subcor"]["fell_back_to_base"] is True
 
         # 6. Streaming SSE endpoint works cleanly for CaPheOS streamed turns.
         sse_req = urllib.request.Request(
             f"{base_url}/v1/chat/completions",
             data=json.dumps(
                 {
-                    "model": "slaingi/company-alpha",
+                    "model": "subcor/company-alpha",
                     "stream": True,
                     "messages": [{"role": "user", "content": "Event: invoice stream test"}],
                 }
@@ -285,7 +285,7 @@ def test_multi_tenant_server_isolation_study_governance_streaming_and_rollback(
 
         # 7. Export CaPheOS format-2 bundle via API.
         code, exp, _ = _http_json(
-            f"{base_url}/v1/slaingi/tenants/company-alpha/units/ops-skill-v1/export-capheos",
+            f"{base_url}/v1/subcor/tenants/company-alpha/units/ops-skill-v1/export-capheos",
             method="POST",
             body={"destination": str(tmp_path / "exported")},
         )
@@ -296,7 +296,7 @@ def test_multi_tenant_server_isolation_study_governance_streaming_and_rollback(
 
         # 8. Atomic rollback deregisters unit live -> immediate revert to frozen base.
         code, rb, _ = _http_json(
-            f"{base_url}/v1/slaingi/tenants/company-alpha/units/ops-skill-v1/rollback",
+            f"{base_url}/v1/subcor/tenants/company-alpha/units/ops-skill-v1/rollback",
             method="POST",
             body={"actor": "risk", "reason": "Drill"},
         )
@@ -308,13 +308,13 @@ def test_multi_tenant_server_isolation_study_governance_streaming_and_rollback(
             f"{base_url}/v1/chat/completions",
             method="POST",
             body={
-                "model": "slaingi/company-alpha",
+                "model": "subcor/company-alpha",
                 "messages": [{"role": "user", "content": "Event: Vendor invoice #555 over cap"}],
             },
         )
         assert code == 200
         assert after_rb["choices"][0]["message"]["content"] == "untrained-base-response"
-        assert after_rb["slaingi"]["fell_back_to_base"] is True
+        assert after_rb["subcor"]["fell_back_to_base"] is True
     finally:
         server.shutdown()
         server.server_close()

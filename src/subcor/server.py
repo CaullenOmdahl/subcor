@@ -1,4 +1,4 @@
-"""Multi-tenant OpenAI-compatible & Governed Control Plane HTTP server for SLAINGI.
+"""Multi-tenant OpenAI-compatible & Governed Control Plane HTTP server for SUBCOR.
 
 Serves ONE frozen compact base kernel (e.g., Qwen3.5-0.8B-4bit, 652 MB) to N
 isolated CaPheOS company instances simultaneously:
@@ -12,12 +12,12 @@ isolated CaPheOS company instances simultaneously:
       * GET  /v1/models
       * POST /v1/chat/completions  (streaming SSE & non-streaming JSON)
   - Governed Model-Ops Control Plane (for CaPheOS tools/risk/people seats):
-      * POST /v1/slaingi/tenants/{tenant}/trajectories
-      * POST /v1/slaingi/tenants/{tenant}/study
-      * GET  /v1/slaingi/tenants/{tenant}/units
-      * POST /v1/slaingi/tenants/{tenant}/units/{unit_id}/promote
-      * POST /v1/slaingi/tenants/{tenant}/units/{unit_id}/rollback
-      * POST /v1/slaingi/tenants/{tenant}/units/{unit_id}/export-capheos
+      * POST /v1/subcor/tenants/{tenant}/trajectories
+      * POST /v1/subcor/tenants/{tenant}/study
+      * GET  /v1/subcor/tenants/{tenant}/units
+      * POST /v1/subcor/tenants/{tenant}/units/{unit_id}/promote
+      * POST /v1/subcor/tenants/{tenant}/units/{unit_id}/rollback
+      * POST /v1/subcor/tenants/{tenant}/units/{unit_id}/export-capheos
 
 Uses Python stdlib ThreadingHTTPServer (zero extra dependencies) with a kernel
 lock so concurrent requests from multiple CaPheOS instances serialize safely on
@@ -41,10 +41,10 @@ from urllib.parse import urlparse
 
 import numpy as np
 
-from slaingi.expansion import LowRankAdapter
-from slaingi.intern import TextTrajectory, TextTrajectoryStore, ngram_repetition_ratio
-from slaingi.router import MoESkillRouter, RouterGate, RoutingDecision
-from slaingi.types import (
+from subcor.expansion import LowRankAdapter
+from subcor.intern import TextTrajectory, TextTrajectoryStore, ngram_repetition_ratio
+from subcor.router import MoESkillRouter, RouterGate, RoutingDecision
+from subcor.types import (
     AdaptationMode,
     DeltaEncoding,
     GovernanceError,
@@ -54,7 +54,7 @@ from slaingi.types import (
     VerificationError,
     VerificationEvidence,
 )
-from slaingi.units import LayerDeltaPayload, SkillUnitRegistry, build_layer_delta
+from subcor.units import LayerDeltaPayload, SkillUnitRegistry, build_layer_delta
 
 _TENANT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 
@@ -80,7 +80,7 @@ class InferenceResult:
 
 
 class ServingKernel(Protocol):
-    """Minimal kernel interface required by SlaingiServer (MLX or test backend)."""
+    """Minimal kernel interface required by SubcorServer (MLX or test backend)."""
 
     model_id: str
     tap_layer: str
@@ -128,7 +128,7 @@ class MLXServingAdapter:
         *,
         target_layer_indices: list[int] | None = None,
     ) -> None:
-        from slaingi.backends.mlx_kernel import MLXKernel
+        from subcor.backends.mlx_kernel import MLXKernel
 
         indices = (
             target_layer_indices if target_layer_indices is not None else [18, 19, 20, 21, 22, 23]
@@ -306,14 +306,14 @@ class TenantManager:
         """Resolve (TenantContext | None, use_base_only) from OpenAI model or header.
 
         Supported model conventions:
-          - "slaingi/base"            -> pure frozen base, no tenant routing
-          - "slaingi/<tenant_id>"     -> tenant <tenant_id> with MoE routing
+          - "subcor/base"            -> pure frozen base, no tenant routing
+          - "subcor/<tenant_id>"     -> tenant <tenant_id> with MoE routing
           - "<tenant_id>"             -> if matching tenant exists
-          - any other model + X-SLAINGI-Tenant header -> that tenant
+          - any other model + X-SUBCOR-Tenant header -> that tenant
         """
-        if model_field == "slaingi/base":
+        if model_field == "subcor/base":
             return None, True
-        if model_field and model_field.startswith("slaingi/"):
+        if model_field and model_field.startswith("subcor/"):
             tid = model_field.split("/", 1)[1]
             return self.ensure_tenant(tid), False
         if header_tenant:
@@ -591,8 +591,8 @@ def _extract_bearer(auth_header: str | None) -> str | None:
     return None
 
 
-class SlaingiHTTPServer(ThreadingHTTPServer):
-    """Multi-tenant SLAINGI HTTP server carrying TenantManager and optional API key."""
+class SubcorHTTPServer(ThreadingHTTPServer):
+    """Multi-tenant SUBCOR HTTP server carrying TenantManager and optional API key."""
 
     allow_reuse_address = True
 
@@ -605,13 +605,13 @@ class SlaingiHTTPServer(ThreadingHTTPServer):
     ) -> None:
         self.manager = manager
         self.api_key = api_key
-        super().__init__(server_address, SlaingiRequestHandler)
+        super().__init__(server_address, SubcorRequestHandler)
 
 
-class SlaingiRequestHandler(BaseHTTPRequestHandler):
-    """HTTP handler implementing OpenAI /v1/chat/completions + SLAINGI Control Plane."""
+class SubcorRequestHandler(BaseHTTPRequestHandler):
+    """HTTP handler implementing OpenAI /v1/chat/completions + SUBCOR Control Plane."""
 
-    server: SlaingiHTTPServer
+    server: SubcorHTTPServer
     protocol_version = "HTTP/1.1"
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -687,21 +687,21 @@ class SlaingiRequestHandler(BaseHTTPRequestHandler):
             now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             models = [
                 {
-                    "name": "slaingi/base",
-                    "model": "slaingi/base",
+                    "name": "subcor/base",
+                    "model": "subcor/base",
                     "modified_at": now_iso,
                     "size": 0,
-                    "digest": "slaingi-frozen-base",
+                    "digest": "subcor-frozen-base",
                 }
             ]
             for tid in mgr.list_tenants():
                 models.append(
                     {
-                        "name": f"slaingi/{tid}",
-                        "model": f"slaingi/{tid}",
+                        "name": f"subcor/{tid}",
+                        "model": f"subcor/{tid}",
                         "modified_at": now_iso,
                         "size": 0,
-                        "digest": f"slaingi-tenant-{tid}",
+                        "digest": f"subcor-tenant-{tid}",
                     }
                 )
             self._send_json(HTTPStatus.OK, {"models": models})
@@ -711,16 +711,16 @@ class SlaingiRequestHandler(BaseHTTPRequestHandler):
             now = int(time.time())
             data = [
                 {
-                    "id": "slaingi/base",
+                    "id": "subcor/base",
                     "object": "model",
                     "created": now,
-                    "owned_by": "slaingi",
+                    "owned_by": "subcor",
                 }
             ]
             for tid in mgr.list_tenants():
                 data.append(
                     {
-                        "id": f"slaingi/{tid}",
+                        "id": f"subcor/{tid}",
                         "object": "model",
                         "created": now,
                         "owned_by": tid,
@@ -729,7 +729,7 @@ class SlaingiRequestHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, {"object": "list", "data": data})
             return
 
-        m_units = re.match(r"^/v1/slaingi/tenants/([^/]+)/units$", path)
+        m_units = re.match(r"^/v1/subcor/tenants/([^/]+)/units$", path)
         if m_units:
             try:
                 ctx = mgr.ensure_tenant(m_units.group(1))
@@ -765,7 +765,7 @@ class SlaingiRequestHandler(BaseHTTPRequestHandler):
         if path == "/v1/chat/completions":
             try:
                 model_field = body.get("model")
-                header_tenant = self.headers.get("X-SLAINGI-Tenant")
+                header_tenant = self.headers.get("X-SUBCOR-Tenant")
                 seat = self.headers.get("X-CaPheOS-Seat", "intern")
                 tenant, use_base_only = mgr.resolve_tenant_from_model(
                     None if model_field is None else str(model_field),
@@ -795,9 +795,7 @@ class SlaingiRequestHandler(BaseHTTPRequestHandler):
             completion_id = f"chatcmpl-{uuid.uuid4().hex[:16]}"
             created = int(time.time())
             model_name = (
-                "slaingi/base"
-                if (use_base_only or tenant is None)
-                else f"slaingi/{tenant.tenant_id}"
+                "subcor/base" if (use_base_only or tenant is None) else f"subcor/{tenant.tenant_id}"
             )
             routed_header = ",".join(res.routing.selected_units) or "base"
 
@@ -831,7 +829,7 @@ class SlaingiRequestHandler(BaseHTTPRequestHandler):
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
-                self.send_header("X-SLAINGI-Routed-Units", routed_header)
+                self.send_header("X-SUBCOR-Routed-Units", routed_header)
                 self.send_header("Content-Length", str(len(sse_payload)))
                 self.end_headers()
                 self.wfile.write(sse_payload)
@@ -854,7 +852,7 @@ class SlaingiRequestHandler(BaseHTTPRequestHandler):
                     "completion_tokens": res.completion_tokens,
                     "total_tokens": res.prompt_tokens + res.completion_tokens,
                 },
-                "slaingi": {
+                "subcor": {
                     "tenant": None if tenant is None else tenant.tenant_id,
                     "selected_units": list(res.routing.selected_units),
                     "fell_back_to_base": res.routing.fell_back_to_base,
@@ -864,12 +862,12 @@ class SlaingiRequestHandler(BaseHTTPRequestHandler):
             self._send_json(
                 HTTPStatus.OK,
                 payload,
-                extra_headers={"X-SLAINGI-Routed-Units": routed_header},
+                extra_headers={"X-SUBCOR-Routed-Units": routed_header},
             )
             return
 
         # 2. Ingest trajectories for a tenant.
-        m_traj = re.match(r"^/v1/slaingi/tenants/([^/]+)/trajectories$", path)
+        m_traj = re.match(r"^/v1/subcor/tenants/([^/]+)/trajectories$", path)
         if m_traj:
             try:
                 recs = body.get("trajectories")
@@ -882,7 +880,7 @@ class SlaingiRequestHandler(BaseHTTPRequestHandler):
             return
 
         # 3. Trigger a governed Study Cycle for a tenant.
-        m_study = re.match(r"^/v1/slaingi/tenants/([^/]+)/study$", path)
+        m_study = re.match(r"^/v1/subcor/tenants/([^/]+)/study$", path)
         if m_study:
             try:
                 result = mgr.run_study_cycle(
@@ -911,7 +909,7 @@ class SlaingiRequestHandler(BaseHTTPRequestHandler):
             return
 
         # 4. Promote a CONFORMANT unit (enforces no self-approval).
-        m_promote = re.match(r"^/v1/slaingi/tenants/([^/]+)/units/([^/]+)/promote$", path)
+        m_promote = re.match(r"^/v1/subcor/tenants/([^/]+)/units/([^/]+)/promote$", path)
         if m_promote:
             try:
                 manifest = mgr.promote_unit(
@@ -927,7 +925,7 @@ class SlaingiRequestHandler(BaseHTTPRequestHandler):
             return
 
         # 5. Atomic rollback of an ENABLED unit.
-        m_rb = re.match(r"^/v1/slaingi/tenants/([^/]+)/units/([^/]+)/rollback$", path)
+        m_rb = re.match(r"^/v1/subcor/tenants/([^/]+)/units/([^/]+)/rollback$", path)
         if m_rb:
             try:
                 manifest = mgr.rollback_unit(
@@ -944,7 +942,7 @@ class SlaingiRequestHandler(BaseHTTPRequestHandler):
             return
 
         # 6. Export a portable CaPheOS format-2 bundle.
-        m_exp = re.match(r"^/v1/slaingi/tenants/([^/]+)/units/([^/]+)/export-capheos$", path)
+        m_exp = re.match(r"^/v1/subcor/tenants/([^/]+)/units/([^/]+)/export-capheos$", path)
         if m_exp:
             try:
                 ctx = mgr.ensure_tenant(m_exp.group(1))

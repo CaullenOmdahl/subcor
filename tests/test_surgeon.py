@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from slaingi.surgeon import WeightSpaceSurgeon
+from subcor.surgeon import WeightSpaceSurgeon
 
 
 def test_surgeon_identifies_peak_anomaly_layer_and_ablates_direction() -> None:

@@ -1,10 +1,10 @@
-"""SLAINGI: Self-Learning AI General Intelligence.
+"""SUBCOR: Sub-Bit Unit-Based Continual On-Policy Runtime.
 
 Governed weight-space surgery, function-preserving dynamic low-rank expansion,
 and sub-1-bit binary Skill Units over frozen quantized base kernels.
 """
 
-from slaingi.benchmark import (
+from subcor.benchmark import (
     AxisSummary,
     BenchmarkCase,
     BenchmarkLedger,
@@ -19,26 +19,26 @@ from slaingi.benchmark import (
     run_benchmark_http,
     run_benchmark_local,
 )
-from slaingi.expansion import ElasticLinear, LowRankAdapter
-from slaingi.proving_ground import MicroInternNet, ProvingGroundReport, run_proving_ground
-from slaingi.router import MoESkillRouter, RouterGate, RoutingDecision
-from slaingi.sub1bit import Sub1BitMatrix, factorize_sub1bit, relative_frobenius_error
-from slaingi.surgeon import LayerDiagnosis, SurgicalPatch, WeightSpaceSurgeon
-from slaingi.telemetry import TrajectoryStore
-from slaingi.types import (
+from subcor.expansion import ElasticLinear, LowRankAdapter
+from subcor.proving_ground import MicroInternNet, ProvingGroundReport, run_proving_ground
+from subcor.router import MoESkillRouter, RouterGate, RoutingDecision
+from subcor.sub1bit import Sub1BitMatrix, factorize_sub1bit, relative_frobenius_error
+from subcor.surgeon import LayerDiagnosis, SurgicalPatch, WeightSpaceSurgeon
+from subcor.telemetry import TrajectoryStore
+from subcor.types import (
     AdaptationMode,
     ConformanceReport,
     DeltaEncoding,
     GovernanceError,
     IntegrityError,
     SkillUnitManifest,
-    SlaingiError,
+    SubcorError,
     TrajectoryRecord,
     UnitState,
     VerificationError,
     VerificationEvidence,
 )
-from slaingi.units import LayerDeltaPayload, SkillUnitRegistry, build_layer_delta
+from subcor.units import LayerDeltaPayload, SkillUnitRegistry, build_layer_delta
 
 __version__ = "0.1.0"
 
@@ -66,7 +66,7 @@ __all__ = [
     "RoutingDecision",
     "SkillUnitManifest",
     "SkillUnitRegistry",
-    "SlaingiError",
+    "SubcorError",
     "Sub1BitMatrix",
     "SurgicalPatch",
     "TrajectoryRecord",

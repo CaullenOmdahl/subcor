@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-_MAGIC = b"SL1B"
+_MAGIC = b"SC1B"
 _VERSION = 1
 _HEADER_STRUCT = struct.Struct("<4sBIII")  # magic, version, d_out, d_in, rank
 

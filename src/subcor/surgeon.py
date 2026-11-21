@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from slaingi.expansion import LowRankAdapter
+from subcor.expansion import LowRankAdapter
 
 
 @dataclass(frozen=True)

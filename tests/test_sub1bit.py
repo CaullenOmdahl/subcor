@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from slaingi.sub1bit import Sub1BitMatrix, factorize_sub1bit, relative_frobenius_error
+from subcor.sub1bit import Sub1BitMatrix, factorize_sub1bit, relative_frobenius_error
 
 
 def test_sub1bit_achieves_strictly_below_one_bit_per_weight() -> None:

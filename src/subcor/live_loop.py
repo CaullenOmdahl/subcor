@@ -28,15 +28,15 @@ from pathlib import Path
 
 import numpy as np
 
-from slaingi.backends.mlx_kernel import (
+from subcor.backends.mlx_kernel import (
     DEFAULT_COMPACT_MODEL,
     MLXKernel,
     export_mlx_lora_safetensors,
 )
-from slaingi.intern import TextTrajectory, TextTrajectoryStore
-from slaingi.router import MoESkillRouter, RouterGate
-from slaingi.surgeon import WeightSpaceSurgeon
-from slaingi.types import (
+from subcor.intern import TextTrajectory, TextTrajectoryStore
+from subcor.router import MoESkillRouter, RouterGate
+from subcor.surgeon import WeightSpaceSurgeon
+from subcor.types import (
     AdaptationMode,
     DeltaEncoding,
     GovernanceError,
@@ -44,7 +44,7 @@ from slaingi.types import (
     UnitState,
     VerificationEvidence,
 )
-from slaingi.units import LayerDeltaPayload, SkillUnitRegistry, build_layer_delta
+from subcor.units import LayerDeltaPayload, SkillUnitRegistry, build_layer_delta
 
 OPS_SYSTEM_PROMPT = (
     "You are the CaPheOS Intern router. Reply ONLY with compact JSON containing "

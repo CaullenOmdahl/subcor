@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from slaingi.benchmark import (
+from subcor.benchmark import (
     BenchmarkCase,
     BenchmarkLedger,
     BenchmarkSuite,
@@ -18,14 +18,14 @@ from slaingi.benchmark import (
     run_benchmark_http,
     run_benchmark_local,
 )
-from slaingi.router import MoESkillRouter, RoutingDecision
-from slaingi.server import (
+from subcor.router import MoESkillRouter, RoutingDecision
+from subcor.server import (
     InferenceResult,
-    SlaingiHTTPServer,
+    SubcorHTTPServer,
     TenantManager,
     build_dummy_delta,
 )
-from slaingi.units import LayerDeltaPayload, SkillUnitRegistry
+from subcor.units import LayerDeltaPayload, SkillUnitRegistry
 
 
 class _MockBenchKernel:
@@ -92,7 +92,7 @@ class _MockBenchKernel:
 
 def test_suite_digest_and_roundtrip_and_graders(tmp_path: Path) -> None:
     suite = core_v1_suite()
-    assert suite.suite_id == "slaingi-core-v1"
+    assert suite.suite_id == "subcor-core-v1"
     assert len(suite.axes) == 5
     digest_1 = suite.digest()
 
@@ -191,8 +191,8 @@ def test_longitudinal_benchmark_ledger_diff_and_http_runner(tmp_path: Path) -> N
     )
     manager.promote_unit("company-alpha", "ops-skill-v1", approver="risk")
 
-    # Snapshot 1: Live HTTP benchmark against SlaingiHTTPServer!
-    server = SlaingiHTTPServer(("127.0.0.1", 0), manager=manager, api_key="bench-key")
+    # Snapshot 1: Live HTTP benchmark against SubcorHTTPServer!
+    server = SubcorHTTPServer(("127.0.0.1", 0), manager=manager, api_key="bench-key")
     host, port = server.server_address
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -200,7 +200,7 @@ def test_longitudinal_benchmark_ledger_diff_and_http_runner(tmp_path: Path) -> N
         snap1 = run_benchmark_http(
             suite=mini_suite,
             base_url=f"http://{host}:{port}/v1",
-            model="slaingi/company-alpha",
+            model="subcor/company-alpha",
             label="v1-after-ops-unit",
             api_key="bench-key",
         )
@@ -227,7 +227,7 @@ def test_longitudinal_benchmark_ledger_diff_and_http_runner(tmp_path: Path) -> N
     assert delta.unit_count_delta == 1
 
     md = render_markdown_report(loaded)
-    assert "# SLAINGI Functional Growth Report" in md
+    assert "# SUBCOR Functional Growth Report" in md
     assert "`day0-frozen-base`" in md
     assert "`v1-after-ops-unit`" in md
     assert "PRESERVED" in md

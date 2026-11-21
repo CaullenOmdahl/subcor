@@ -1,6 +1,6 @@
 """Text-level Intern telemetry store enforcing the Verified Evidence Gate.
 
-Extends SLAINGI's append-only telemetry contract to real LLM text generations:
+Extends SUBCOR's append-only telemetry contract to real LLM text generations:
   - Captures prompt, Intern response, token count, step/token-limit exhaustion,
     n-gram repetition ratio (for detecting thinking loops), verified senior
     corrections, and per-layer hidden-state activation snapshots.
@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from slaingi.types import VerificationError, VerificationEvidence
+from subcor.types import VerificationError, VerificationEvidence
 
 
 def ngram_repetition_ratio(text: str, *, n: int = 4) -> float:

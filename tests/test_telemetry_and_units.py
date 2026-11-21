@@ -9,9 +9,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from slaingi.expansion import LowRankAdapter
-from slaingi.telemetry import TrajectoryStore
-from slaingi.types import (
+from subcor.expansion import LowRankAdapter
+from subcor.telemetry import TrajectoryStore
+from subcor.types import (
     AdaptationMode,
     DeltaEncoding,
     GovernanceError,
@@ -21,7 +21,7 @@ from slaingi.types import (
     VerificationError,
     VerificationEvidence,
 )
-from slaingi.units import SkillUnitRegistry, build_layer_delta
+from subcor.units import SkillUnitRegistry, build_layer_delta
 
 
 def test_trajectory_store_enforces_verified_evidence_gate(tmp_path: Path) -> None:
@@ -143,8 +143,8 @@ def test_registry_governance_integrity_rollback_and_capheos_export(tmp_path: Pat
     bundle_dir = registry.export_capheos_unit("skill-alpha", tmp_path / "capheos-export")
     module_json = json.loads((bundle_dir / "module.json").read_text(encoding="utf-8"))
     assert module_json["format"] == 2
-    assert module_json["id"] == "slaingi-skill-alpha"
-    assert module_json["slaingi"]["payloadSha256"] == enabled.payload_sha256
+    assert module_json["id"] == "subcor-skill-alpha"
+    assert module_json["subcor"]["payloadSha256"] == enabled.payload_sha256
 
     proc = subprocess.run(
         ["node", str(bundle_dir / "conformance" / "test.js")],
@@ -153,7 +153,7 @@ def test_registry_governance_integrity_rollback_and_capheos_export(tmp_path: Pat
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "PASS slaingi-skill-alpha@1.0.0" in proc.stdout
+    assert "PASS subcor-skill-alpha@1.0.0" in proc.stdout
 
     # Atomic rollback transitions ENABLED -> ROLLED_BACK and writes audit log.
     rolled = registry.rollback("skill-alpha", actor="risk", reason="Regression drill")
@@ -161,7 +161,7 @@ def test_registry_governance_integrity_rollback_and_capheos_export(tmp_path: Pat
     assert (tmp_path / "units" / "skill-alpha" / "audit.jsonl").exists()
 
     # Tampering with payload bytes fails closed with IntegrityError.
-    payload_path = tmp_path / "units" / "skill-alpha" / "payload.slun"
+    payload_path = tmp_path / "units" / "skill-alpha" / "payload.scun"
     raw = bytearray(payload_path.read_bytes())
     raw[-1] ^= 0xFF
     payload_path.write_bytes(bytes(raw))

@@ -1,6 +1,6 @@
-# SLAINGI Functional Growth Report
+# SUBCOR Functional Growth Report
 
-- **Suite:** `slaingi-core-v1@1.0.0` (`sha256:9e9383e77a24`)
+- **Suite:** `subcor-core-v1@1.0.0` (`sha256:1732c1fcad55`)
 - **Model:** `mlx-community/Qwen3.5-0.8B-4bit` (tenant: `growth-lab`)
 - **Snapshots Recorded:** 3 (`day0-frozen-base` → `v2-ops-plus-noc`)
 - **Net Overall Growth:** `41.7% → 58.3%` (`+16.7 pp`)

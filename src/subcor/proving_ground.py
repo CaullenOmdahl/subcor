@@ -1,4 +1,4 @@
-"""End-to-end Micro-Intern Proving Ground for SLAINGI.
+"""End-to-end Micro-Intern Proving Ground for SUBCOR.
 
 Constructs a real multi-layer residual iterative reasoning network
 (MicroInternNet) afflicted with two distinct failure modes mirroring the
@@ -27,10 +27,10 @@ from pathlib import Path
 
 import numpy as np
 
-from slaingi.expansion import ElasticLinear, LowRankAdapter
-from slaingi.surgeon import WeightSpaceSurgeon
-from slaingi.telemetry import TrajectoryStore
-from slaingi.types import (
+from subcor.expansion import ElasticLinear, LowRankAdapter
+from subcor.surgeon import WeightSpaceSurgeon
+from subcor.telemetry import TrajectoryStore
+from subcor.types import (
     AdaptationMode,
     DeltaEncoding,
     GovernanceError,
@@ -38,7 +38,7 @@ from slaingi.types import (
     TrajectoryRecord,
     VerificationEvidence,
 )
-from slaingi.units import SkillUnitRegistry, build_layer_delta
+from subcor.units import SkillUnitRegistry, build_layer_delta
 
 
 @dataclass(frozen=True)
@@ -62,7 +62,7 @@ class EvalMetrics:
 
 @dataclass(frozen=True)
 class ProvingGroundReport:
-    """Complete verified report of one end-to-end SLAINGI proving-ground run."""
+    """Complete verified report of one end-to-end SUBCOR proving-ground run."""
 
     baseline_clean: EvalMetrics
     baseline_loop: EvalMetrics
@@ -260,7 +260,7 @@ def run_proving_ground(
     export_capheos_dir: Path | None = None,
     seed: int = 42,
 ) -> ProvingGroundReport:
-    """Execute the complete SLAINGI proving-ground experiment end-to-end."""
+    """Execute the complete SUBCOR proving-ground experiment end-to-end."""
     work_dir.mkdir(parents=True, exist_ok=True)
     store = TrajectoryStore(work_dir / "telemetry" / "trajectories.jsonl")
     registry = SkillUnitRegistry(work_dir / "units")

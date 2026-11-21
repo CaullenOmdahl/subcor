@@ -1,10 +1,10 @@
-"""Apple Silicon MLX frozen-kernel runtime with hot-swappable SLAINGI Skill Units.
+"""Apple Silicon MLX frozen-kernel runtime with hot-swappable SUBCOR Skill Units.
 
 Wraps any compact mlx-lm quantized checkpoint (e.g., Qwen3.5-0.8B-4bit or
 Gemma-4-E2B-it-qat-4bit) as an immutable base kernel:
 
   - Base QuantizedLinear weights are strictly frozen and never overwritten.
-  - Instrumented layers are wrapped in SlaingiMLXLinear, supporting:
+  - Instrumented layers are wrapped in SubcorMLXLinear, supporting:
       * Live mean hidden-state activation recording during generation.
       * Multi-unit hot-swap mounting and atomic rollback of Sub-1-Bit or FP32
         Skill Units verified by SHA-256 via SkillUnitRegistry.
@@ -32,10 +32,10 @@ from mlx_lm import generate, load
 from mlx_lm.models.base import create_attention_mask, create_ssm_mask
 from mlx_lm.sample_utils import make_sampler
 
-from slaingi.expansion import LowRankAdapter
-from slaingi.intern import ngram_repetition_ratio
-from slaingi.router import MoESkillRouter, RoutingDecision
-from slaingi.units import LayerDeltaPayload, SkillUnitRegistry
+from subcor.expansion import LowRankAdapter
+from subcor.intern import ngram_repetition_ratio
+from subcor.router import MoESkillRouter, RoutingDecision
+from subcor.units import LayerDeltaPayload, SkillUnitRegistry
 
 DEFAULT_COMPACT_MODEL = "mlx-community/Qwen3.5-0.8B-4bit"
 
@@ -59,7 +59,7 @@ class GenerationTrace:
     layer_activations: dict[str, np.ndarray]
 
 
-class SlaingiMLXLinear(nn.Module):
+class SubcorMLXLinear(nn.Module):
     """Hot-swappable adapter wrapper around a frozen MLX Linear / QuantizedLinear layer."""
 
     def __init__(self, base: nn.Module, layer_name: str) -> None:
@@ -214,7 +214,7 @@ class SlaingiMLXLinear(nn.Module):
         return ["lora_a", "lora_b"]
 
     def extract_trainable_lora(self, adapter_name: str) -> LowRankAdapter:
-        """Convert the active trainable MLX branch into a SLAINGI LowRankAdapter."""
+        """Convert the active trainable MLX branch into a SUBCOR LowRankAdapter."""
         if not self._lora_active or self.lora_a is None or self.lora_b is None:
             raise RuntimeError(f"No trainable LoRA attached on layer '{self.layer_name}'")
         if self._lora_binary_ste:
@@ -320,12 +320,12 @@ class MLXKernel:
             candidates = [7, 11, 15, 19, num_layers - 3, num_layers - 2, num_layers - 1]
             target_layer_indices = sorted({i for i in candidates if 0 <= i < num_layers})
 
-        self.instrumented: dict[str, SlaingiMLXLinear] = {}
+        self.instrumented: dict[str, SubcorMLXLinear] = {}
         for idx in target_layer_indices:
             dotted = f"layers.{idx}.{projection_attr}"
             parent, attr = _resolve_parent_and_attr(self.model, dotted)
             base_mod = getattr(parent, attr)
-            wrapped = SlaingiMLXLinear(base_mod, layer_name=dotted)
+            wrapped = SubcorMLXLinear(base_mod, layer_name=dotted)
             setattr(parent, attr, wrapped)
             self.instrumented[dotted] = wrapped
 
@@ -777,7 +777,7 @@ def export_mlx_lora_safetensors(
             "dropout": 0.0,
             "keys": sorted(keys),
         },
-        "slaingi_unit": {
+        "subcor_unit": {
             "unit_id": manifest.unit_id,
             "version": manifest.version,
             "payload_sha256": manifest.payload_sha256,
