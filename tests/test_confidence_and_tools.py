@@ -21,6 +21,8 @@ def test_parse_qwen_xml_tool_calls_with_type_coercion() -> None:
         "<parameter=invoice_id>INV-42</parameter>\n"
         "<parameter=limit>10</parameter>\n"
         "<parameter=include_tax>true</parameter>\n"
+        "<parameter=python_bool>True</parameter>\n"
+        "<parameter=python_false>False</parameter>\n"
         "<parameter=threshold>99.5</parameter>\n"
         '<parameter=tags>["urgent","finance"]</parameter>\n'
         "</function>\n"
@@ -38,6 +40,8 @@ def test_parse_qwen_xml_tool_calls_with_type_coercion() -> None:
         "invoice_id": "INV-42",
         "limit": 10,
         "include_tax": True,
+        "python_bool": True,
+        "python_false": False,
         "threshold": 99.5,
         "tags": ["urgent", "finance"],
     }
