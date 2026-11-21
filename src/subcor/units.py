@@ -36,6 +36,7 @@ from subcor.types import (
     DeltaEncoding,
     GovernanceError,
     IntegrityError,
+    SkillSpec,
     SkillUnitManifest,
     UnitState,
 )
@@ -251,6 +252,9 @@ class SkillUnitRegistry:
     def _router_gate_path(self, unit_id: str) -> Path:
         return self._unit_dir(unit_id) / "router_gate.json"
 
+    def _skill_spec_path(self, unit_id: str) -> Path:
+        return self._unit_dir(unit_id) / "skill_spec.json"
+
     def save_router_gate(self, gate: RouterGate) -> None:
         """Attach or update a persistent MoE RouterGate for an existing Skill Unit."""
         self.get_manifest(gate.unit_id)
@@ -265,6 +269,21 @@ class SkillUnitRegistry:
         if not path.exists():
             return None
         return RouterGate.from_dict(json.loads(path.read_text(encoding="utf-8")))
+
+    def save_skill_spec(self, spec: SkillSpec) -> None:
+        """Attach portable workflow source (`skill_spec.json`) for future base-kernel recompilation."""
+        self.get_manifest(spec.unit_id)
+        self._skill_spec_path(spec.unit_id).write_text(
+            json.dumps(spec.to_dict(), indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def load_skill_spec(self, unit_id: str) -> SkillSpec | None:
+        """Load portable workflow source (`skill_spec.json`) for a Skill Unit, if present."""
+        path = self._skill_spec_path(unit_id)
+        if not path.exists():
+            return None
+        return SkillSpec.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
     def _write_manifest(self, manifest: SkillUnitManifest) -> None:
         path = self._manifest_path(manifest.unit_id)
@@ -284,6 +303,7 @@ class SkillUnitRegistry:
         proposer: str,
         mode: AdaptationMode,
         deltas: list[LayerDeltaPayload],
+        base_kernel_id: str = "unknown",
         license_id: str = "Apache-2.0",
     ) -> SkillUnitManifest:
         """Package proposed layer deltas into a content-addressed DORMANT Skill Unit."""
@@ -317,6 +337,7 @@ class SkillUnitRegistry:
             payload_bytes=len(raw_payload),
             effective_bits_per_weight=bpw,
             state=UnitState.DORMANT,
+            base_kernel_id=base_kernel_id,
             license=license_id,
         )
         unit_dir.mkdir(parents=True, exist_ok=False)
@@ -497,6 +518,15 @@ class SkillUnitRegistry:
                 encoding="utf-8",
             )
 
+        spec = self.load_skill_spec(unit_id)
+        skill_spec_file: str | None = None
+        if spec is not None:
+            skill_spec_file = "skill_spec.json"
+            (out_dir / skill_spec_file).write_text(
+                json.dumps(spec.to_dict(), indent=2) + "\n",
+                encoding="utf-8",
+            )
+
         capheos_manifest: dict[str, Any] = {
             "format": 2,
             "id": f"subcor-{manifest.unit_id}",
@@ -520,11 +550,13 @@ class SkillUnitRegistry:
                 "subprocess": False,
             },
             "subcor": {
+                "baseKernelId": manifest.base_kernel_id,
                 "mode": manifest.mode.value,
                 "encoding": manifest.encoding.value,
                 "targetLayers": list(manifest.target_layers),
                 "payloadFile": "weights.scun",
                 "routerGateFile": router_gate_file,
+                "skillSpecFile": skill_spec_file,
                 "payloadSha256": manifest.payload_sha256,
                 "payloadBytes": manifest.payload_bytes,
                 "effectiveBitsPerWeight": round(manifest.effective_bits_per_weight, 4),

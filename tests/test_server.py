@@ -6,6 +6,8 @@ import json
 import threading
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,16 @@ from subcor.server import (
 from subcor.units import LayerDeltaPayload, SkillUnitRegistry
 
 
+@dataclass(frozen=True)
+class _FakeStreamEvent:
+    text: str
+    token_id: int
+    logprob: float
+    prompt_tokens: int
+    generation_tokens: int
+    finish_reason: str | None = None
+
+
 class _FakeMultiSkillKernel:
     """Deterministic test kernel simulating a frozen base + routed Skill Units."""
 
@@ -35,6 +47,8 @@ class _FakeMultiSkillKernel:
         self._noc_vec = np.eye(self._dim, dtype=np.float64)[1]
         self._gen_vec = np.eye(self._dim, dtype=np.float64)[2]
         self.invalidated: list[str] = []
+        self.last_messages: list[dict[str, Any]] = []
+        self.last_tools: list[dict[str, Any]] | None = None
 
     def encode_prompt_embedding(self, user_prompt: str) -> np.ndarray:
         low = user_prompt.lower()
@@ -43,6 +57,133 @@ class _FakeMultiSkillKernel:
         if "alert:" in low or "outage" in low or "503" in low:
             return self._noc_vec.copy()
         return self._gen_vec.copy()
+
+    def _route_for_prompt(
+        self,
+        user_prompt: str,
+        router: MoESkillRouter | None,
+        top_k: int,
+    ) -> RoutingDecision:
+        emb = self.encode_prompt_embedding(user_prompt)
+        return (
+            router.route(emb, top_k=top_k)
+            if router is not None and router.registered_units
+            else RoutingDecision(selected_units=(), scores={}, thresholds={})
+        )
+
+    def generate_routed_messages(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        router: MoESkillRouter | None,
+        registry: SkillUnitRegistry | None,
+        max_tokens: int,
+        enable_thinking: bool,
+        top_k: int,
+    ) -> InferenceResult:
+        self.last_messages = list(messages)
+        self.last_tools = tools
+        user_prompt = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                user_prompt = str(msg.get("content", ""))
+                break
+        decision = self._route_for_prompt(user_prompt, router, top_k)
+
+        # Simulate tool calling when tools are provided and prompt asks to lookup.
+        if tools and "lookup" in user_prompt.lower():
+            return InferenceResult(
+                text="",
+                prompt_tokens=20,
+                completion_tokens=10,
+                hit_token_limit=False,
+                repetition_ratio=0.0,
+                routing=decision,
+                tool_calls=(
+                    {
+                        "id": "call_fake001",
+                        "type": "function",
+                        "function": {
+                            "name": tools[0]["function"]["name"],
+                            "arguments": '{"query":"invoice-555"}',
+                        },
+                    },
+                ),
+                token_logprobs=(-0.05, -0.04, -0.06),
+            )
+
+        # Simulate low confidence when prompt mentions "ambiguous".
+        if "ambiguous" in user_prompt.lower():
+            return InferenceResult(
+                text="not sure",
+                prompt_tokens=14,
+                completion_tokens=2,
+                hit_token_limit=False,
+                repetition_ratio=0.0,
+                routing=decision,
+                token_logprobs=(-1.8, -1.6),
+            )
+
+        # Simulate multi-turn memory recall across earlier turns.
+        if "my codename" in user_prompt.lower():
+            joined = " ".join(str(m.get("content", "")) for m in messages)
+            if "cobalt-7" in joined.lower():
+                return InferenceResult(
+                    text="Your codename is Cobalt-7.",
+                    prompt_tokens=24,
+                    completion_tokens=6,
+                    hit_token_limit=False,
+                    repetition_ratio=0.0,
+                    routing=decision,
+                    token_logprobs=(-0.03, -0.04, -0.02),
+                )
+
+        return self.generate_routed_chat(
+            user_prompt=user_prompt,
+            system_prompt=None,
+            router=router,
+            registry=registry,
+            max_tokens=max_tokens,
+            enable_thinking=enable_thinking,
+            top_k=top_k,
+        )
+
+    def stream_routed_messages(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        router: MoESkillRouter | None,
+        registry: SkillUnitRegistry | None,
+        max_tokens: int,
+        enable_thinking: bool,
+        top_k: int,
+    ) -> tuple[RoutingDecision, Iterator[_FakeStreamEvent]]:
+        user_prompt = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                user_prompt = str(msg.get("content", ""))
+                break
+        decision = self._route_for_prompt(user_prompt, router, top_k)
+        tokens = (
+            ['{"seat":"finance",', '"gate":"owner",', '"code":"FIN-CAP"}']
+            if "ops-skill-v1" in decision.selected_units
+            else ["base-", "stream"]
+        )
+
+        def _gen() -> Iterator[_FakeStreamEvent]:
+            for i, tok in enumerate(tokens, start=1):
+                yield _FakeStreamEvent(
+                    text=tok,
+                    token_id=i,
+                    logprob=-0.05,
+                    prompt_tokens=12,
+                    generation_tokens=i,
+                    finish_reason="stop" if i == len(tokens) else None,
+                )
+
+        return decision, _gen()
 
     def generate_routed_chat(
         self,
@@ -55,12 +196,7 @@ class _FakeMultiSkillKernel:
         enable_thinking: bool,
         top_k: int,
     ) -> InferenceResult:
-        emb = self.encode_prompt_embedding(user_prompt)
-        decision = (
-            router.route(emb, top_k=top_k)
-            if router is not None and router.registered_units
-            else RoutingDecision(selected_units=(), scores={}, thresholds={})
-        )
+        decision = self._route_for_prompt(user_prompt, router, top_k)
         if "ops-skill-v1" in decision.selected_units:
             text = '{"seat":"finance","gate":"owner","code":"FIN-CAP"}'
         elif "noc-skill-v1" in decision.selected_units:
@@ -78,6 +214,7 @@ class _FakeMultiSkillKernel:
             hit_token_limit=False,
             repetition_ratio=0.0,
             routing=decision,
+            token_logprobs=(-0.04, -0.05, -0.03),
         )
 
     def train_skill_deltas(
@@ -236,6 +373,71 @@ def test_multi_tenant_server_isolation_study_governance_streaming_and_rollback(
         assert "FIN-CAP" in alpha_ops["choices"][0]["message"]["content"]
         assert alpha_ops["subcor"]["selected_units"] == ["ops-skill-v1"]
         assert hdrs.get("X-SUBCOR-Routed-Units") == "ops-skill-v1"
+        assert hdrs.get("X-SUBCOR-Escalate") == "false"
+        assert float(hdrs.get("X-SUBCOR-Confidence", "0")) > 0.9
+        assert alpha_ops["subcor"]["confidence"]["escalate_to_cortex"] is False
+        assert alpha_ops["subcor"]["confidence"]["escalation_reason"] == "ok_habitual_execution"
+
+        # 5b. Cortical Handoff (Thalamic Switch) flags low-confidence turns for escalation.
+        code, ambig, ambig_hdrs = _http_json(
+            f"{base_url}/v1/chat/completions",
+            method="POST",
+            body={
+                "model": "subcor/company-alpha",
+                "messages": [{"role": "user", "content": "This is an ambiguous novel request"}],
+            },
+        )
+        assert code == 200
+        assert ambig_hdrs.get("X-SUBCOR-Escalate") == "true"
+        assert ambig["subcor"]["confidence"]["escalate_to_cortex"] is True
+        assert ambig["subcor"]["confidence"]["escalation_reason"] == "low_decode_confidence"
+
+        # 5c. Multi-turn chat history is passed intact (no longer truncated to last user turn).
+        code, multiturn, _ = _http_json(
+            f"{base_url}/v1/chat/completions",
+            method="POST",
+            body={
+                "model": "subcor/company-alpha",
+                "messages": [
+                    {"role": "system", "content": "Be concise."},
+                    {"role": "user", "content": "Remember my codename is Cobalt-7."},
+                    {"role": "assistant", "content": "Noted."},
+                    {"role": "user", "content": "What is my codename?"},
+                ],
+            },
+        )
+        assert code == 200
+        assert "Cobalt-7" in multiturn["choices"][0]["message"]["content"]
+        assert len(kernel.last_messages) == 4
+
+        # 5d. OpenAI tools/tool_calls support returns finish_reason="tool_calls".
+        code, tool_resp, _ = _http_json(
+            f"{base_url}/v1/chat/completions",
+            method="POST",
+            body={
+                "model": "subcor/company-alpha",
+                "messages": [{"role": "user", "content": "Please lookup invoice-555"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "search_ledger",
+                            "description": "Search invoice ledger",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"query": {"type": "string"}},
+                            },
+                        },
+                    }
+                ],
+            },
+        )
+        assert code == 200
+        assert tool_resp["choices"][0]["finish_reason"] == "tool_calls"
+        assert tool_resp["choices"][0]["message"]["content"] is None
+        tcs = tool_resp["choices"][0]["message"]["tool_calls"]
+        assert len(tcs) == 1
+        assert tcs[0]["function"]["name"] == "search_ledger"
 
         code, alpha_gen, _ = _http_json(
             f"{base_url}/v1/chat/completions",
@@ -261,7 +463,7 @@ def test_multi_tenant_server_isolation_study_governance_streaming_and_rollback(
         assert beta_ops["choices"][0]["message"]["content"] == "untrained-base-response"
         assert beta_ops["subcor"]["fell_back_to_base"] is True
 
-        # 6. Streaming SSE endpoint works cleanly for CaPheOS streamed turns.
+        # 6. True token-by-token streaming SSE endpoint emits multiple incremental chunks.
         sse_req = urllib.request.Request(
             f"{base_url}/v1/chat/completions",
             data=json.dumps(
@@ -280,10 +482,23 @@ def test_multi_tenant_server_isolation_study_governance_streaming_and_rollback(
         with urllib.request.urlopen(sse_req, timeout=5) as resp:
             sse_text = resp.read().decode("utf-8")
             assert resp.status == 200
-            assert "FIN-CAP" in sse_text
+            data_lines = [
+                line[6:]
+                for line in sse_text.splitlines()
+                if line.startswith("data: ") and line != "data: [DONE]"
+            ]
+            # role chunk + 3 token chunks + final done chunk = 5 SSE JSON chunks
+            assert len(data_lines) == 5
+            combined = "".join(
+                json.loads(d)["choices"][0]["delta"].get("content", "") for d in data_lines
+            )
+            assert "FIN-CAP" in combined
+            final_chunk = json.loads(data_lines[-1])
+            assert final_chunk["choices"][0]["finish_reason"] == "stop"
+            assert final_chunk["subcor"]["confidence"]["escalate_to_cortex"] is False
             assert "data: [DONE]" in sse_text
 
-        # 7. Export CaPheOS format-2 bundle via API.
+        # 7. Export CaPheOS format-2 bundle via API (includes portable skill_spec.json).
         code, exp, _ = _http_json(
             f"{base_url}/v1/subcor/tenants/company-alpha/units/ops-skill-v1/export-capheos",
             method="POST",
@@ -293,6 +508,7 @@ def test_multi_tenant_server_isolation_study_governance_streaming_and_rollback(
         exp_path = Path(exp["exported_path"])
         assert (exp_path / "module.json").exists()
         assert (exp_path / "router_gate.json").exists()
+        assert (exp_path / "skill_spec.json").exists()
 
         # 8. Atomic rollback deregisters unit live -> immediate revert to frozen base.
         code, rb, _ = _http_json(

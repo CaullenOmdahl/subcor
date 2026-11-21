@@ -2,16 +2,28 @@
 
 **Governed sub-1-bit, MoE-routed Skill Units for self-learning compact language models.**
 
-SUBCOR turns a tiny, frozen 4-bit open-weight model (default **`Qwen3.5-0.8B-4bit`**, 652 MB, running locally at `154 tok/s` on Apple Silicon) into a **self-learning, multi-tenant "Intern" server**. Instead of mutating monolithic checkpoints or relying solely on prompt tweaks, SUBCOR keeps the base kernel read-only and grows audited, **`~81 KiB` (`0.0302 bits/weight`) Skill Units** that are dynamically routed per prompt, gated against regression, blocked from self-approving, rolled back atomically, and exportable as portable **CaPheOS format-2 capability units**.
+SUBCOR turns a tiny, frozen 4-bit open-weight model (default **`Qwen3.5-0.8B-4bit`**, 652 MB, running locally at `154 tok/s` on Apple Silicon) into a **self-learning, multi-tenant subcortical runtime**. Rather than cramming encyclopedic facts into weights, SUBCOR packages **procedural workflows, decision policies, and parsing discipline** into audited, **`~81 KiB` (`0.0302 bits/weight`) Skill Units**—like swappable **drill bits on an impact drill**—while factual memory stays in normal context, RAG, and MCP tools. Units are dynamically routed per prompt, monitor decode uncertainty to hand novel cases back to a frontier model (**Cortical Handoff**), recompile automatically when you upgrade the base model (`subcor recompile`), block self-approval, roll back atomically, and export as portable **CaPheOS format-2 capability units**.
 
-> **Methodology Preprint:** See [docs/PAPER.md](docs/PAPER.md) for the complete mathematical formulation, experimental methodology, empirical results (including negative findings), and limitations.
+> **Methodology Preprint:** See [docs/PAPER.md](docs/PAPER.md) for the Cortical-Subcortical cognitive thesis, mathematical formulation, empirical results (including negative findings), and limitations.
+
+---
+
+## Cognitive Model: Impact Drill + Recompilable Bits
+
+| Brain Analogy | SUBCOR Component | Role |
+|---|---|---|
+| **Working Memory** | Context window, RAG, MCP tools | Holds facts, documents, and live state (never stuffed into weights) |
+| **Prefrontal Cortex** | Frontier senior seats (Claude / GPT / Gemini) | Handles novel planning, ambiguous edge cases, and verifies corrections |
+| **Basal Ganglia** | Frozen `MoESkillRouter` + `RouterGate` | Recognizes familiar routines (`18.3 ms`) and selects the matching `~81 KiB` drill bit |
+| **Cerebellum** | Routed Sub-1-Bit Skill Units (`0.0302 bpw`) | Smooths repeatable execution: routing, tool calling, structured parsing, policy gates |
+| **Thalamic Switch** | `TurnConfidence` (`X-SUBCOR-Escalate`) | Detects decode uncertainty, loops, or unmapped tasks and hands control back to Cortex |
 
 ---
 
 ## Architecture
 
 ```text
-Incoming Prompt (OpenAI-compatible /v1/chat/completions or local MLX)
+Incoming Multi-Turn Chat + OpenAI Tools (/v1/chat/completions — JSON or token SSE)
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -30,7 +42,15 @@ Incoming Prompt (OpenAI-compatible /v1/chat/completions or local MLX)
                 ▼                    ▼                    ▼
         [Pure Frozen Base]   [Skill Unit 1: 81 KiB] [Skill Unit 2: 81 KiB]
          General QA & Chat     0.0302 bits/weight     0.0302 bits/weight
-         (+0.0 pp regression)  SHA-256 verified       SHA-256 verified
+         (+0.0 pp regression)  SHA-256 + skill_spec   SHA-256 + skill_spec
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 3. Cortical Handoff / Thalamic Switch (subcor.confidence)              │
+│    • Scores per-token decode logprobs, router margin, & loop ratio      │
+│    • Emits X-SUBCOR-Escalate, X-SUBCOR-Confidence, & subcor.confidence  │
+│    • Parses native XML/JSON <tool_call> blocks into OpenAI tool_calls   │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Governed Adaptation Loop (How New Skill Units Are Born)
@@ -127,6 +147,20 @@ uv run subcor bench compare \
 uv run subcor bench export-suite --out ./subcor-core-v1.json
 ```
 
+### 5. Recompiling Skill Units Across Base Kernel Upgrades
+
+Each compiled `payload.scun` is a binary tied to its `base_kernel_id` ("the impact drill"), while its companion `skill_spec.json` is portable workflow source code ("the drill bit blueprint"). Upgrading to a newer or larger base checkpoint recompiles your entire library automatically through the locked Conformance Gate:
+
+```bash
+uv run --extra mlx subcor recompile \
+  --source-units ~/.local/share/subcor/tenants/company-a/units \
+  --dest-state ~/.local/share/subcor-v2 \
+  --tenant company-a \
+  --model mlx-community/Qwen3.5-2B-4bit
+```
+
+Recompiled units land in `CONFORMANT` (never self-enabled) so an independent approver promotes them into production.
+
 ---
 
 ## Multi-Tenant HTTP API Reference
@@ -135,13 +169,13 @@ uv run subcor bench export-suite --out ./subcor-core-v1.json
 |---|---|
 | `GET /healthz`, `GET /readyz` | Liveness/readiness, active model, per-tenant enabled units |
 | `GET /v1/models`, `GET /api/tags` | OpenAI & Ollama/StarNet model discovery (`subcor/base`, `subcor/<tenant>`) |
-| `POST /v1/chat/completions` | Routed chat completions (non-streaming JSON & `stream: true` SSE) |
+| `POST /v1/chat/completions` | Full multi-turn chat, OpenAI `tools`/`tool_calls`, true token-by-token SSE streaming (`stream: true`), plus `X-SUBCOR-Routed-Units`, `X-SUBCOR-Escalate`, and `X-SUBCOR-Confidence` headers |
 | `POST /v1/subcor/tenants/{t}/trajectories` | Append verified or unverified Intern trajectories |
-| `POST /v1/subcor/tenants/{t}/study` | Run governed Study Cycle (`CONFORMANT`/`DORMANT`; never self-enables) |
-| `GET  /v1/subcor/tenants/{t}/units` | List tenant Skill Units with SHA-256, bits/weight, and conformance reports |
+| `POST /v1/subcor/tenants/{t}/study` | Run governed Study Cycle (`CONFORMANT`/`DORMANT`; saves `skill_spec.json`; never self-enables) |
+| `GET  /v1/subcor/tenants/{t}/units` | List tenant Skill Units with `base_kernel_id`, SHA-256, bits/weight, and conformance reports |
 | `POST /v1/subcor/tenants/{t}/units/{u}/promote` | Promote `CONFORMANT → ENABLED` (`approver != proposer`, else HTTP 403) |
 | `POST /v1/subcor/tenants/{t}/units/{u}/rollback` | Atomic live rollback `ENABLED → ROLLED_BACK` |
-| `POST /v1/subcor/tenants/{t}/units/{u}/export-capheos` | Export portable CaPheOS format-2 bundle (`module.json`, `weights.scun`, `router_gate.json`, `conformance/test.js`) |
+| `POST /v1/subcor/tenants/{t}/units/{u}/export-capheos` | Export portable CaPheOS format-2 bundle (`module.json`, `weights.scun`, `router_gate.json`, `skill_spec.json`, `conformance/test.js`) |
 
 ---
 
@@ -149,23 +183,25 @@ uv run subcor bench export-suite --out ./subcor-core-v1.json
 
 ```text
 src/subcor/
-├── types.py               # Domain types, lifecycle states, error hierarchy
+├── types.py               # Domain types, SkillSpec, lifecycle states, error hierarchy
 ├── telemetry.py           # Append-only JSONL TrajectoryStore (Verified Evidence Gate)
 ├── intern.py              # TextTrajectoryStore & n-gram repetition loop metrics
 ├── sub1bit.py             # NanoQuant-style bit-packed binary low-rank factorization
 ├── expansion.py           # Function-preserving ElasticLinear + FP32 & Binary STE
 ├── surgeon.py             # Zero-gradient contrastive activation WeightSpaceSurgeon
 ├── router.py              # Training-free frozen-base RouterGate & MoESkillRouter
-├── units.py               # Governed SkillUnitRegistry, SHA-256, rollback, CaPheOS export
-├── server.py              # Multi-tenant OpenAI + Control Plane HTTP server
+├── confidence.py          # Cortical Handoff (TurnConfidence) & OpenAI tool_calls parser
+├── units.py               # Governed SkillUnitRegistry, SHA-256, skill_spec, rollback, export
+├── recompile.py           # Portable Skill Unit recompiler across base-kernel upgrades
+├── server.py              # Multi-tenant OpenAI (multi-turn/tools/SSE) + Control Plane server
 ├── benchmark.py           # Standardized subcor-core-v1 suite, ledger, diff, Markdown reports
 ├── proving_ground.py      # Deterministic synthetic Micro-Intern proving ground
 ├── live_loop.py           # Live Apple Silicon MLX Intern, MoE, and Surgery workflows
-├── cli.py                 # `subcor` CLI entrypoint
+├── cli.py                 # `subcor` CLI entrypoint (`serve`, `bench`, `recompile`, ...)
 └── backends/
-    └── mlx_kernel.py      # Frozen Apple Silicon MLX kernel + native-dtype SubcorMLXLinear
+    └── mlx_kernel.py      # Frozen Apple Silicon MLX kernel, stream_generate, SubcorMLXLinear
 
-tests/                     # 25 automated unit & HTTP integration tests
+tests/                     # 31 automated unit & HTTP integration tests
 docs/
 ├── PAPER.md               # Methodology draft paper (v0.1)
 ├── ARCHITECTURE.md        # Intended behavior contracts, invariants, and ADRs 001–006
