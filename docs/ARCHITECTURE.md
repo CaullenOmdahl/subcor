@@ -111,6 +111,24 @@ CONFORMANT | ENABLED ──(export)────────► CaPheOS module.js
   - Records exact active Skill Units, SHA-256 digests, total adapter bytes, `bits/weight`, per-axis pass rates, base-fallback rates, token-limit loop rate, latency, and tok/s.
   - `compare_snapshots(baseline, current)` checks suite digest equality and flags any regression on locked anchor axes.
 
+### 2.9 Cortical Handoff / Thalamic Uncertainty Switch & Tool Execution (`subcor.confidence`)
+- **Actor:** Runtime inference server (`SubcorRequestHandler` / `TenantManager`) cooperating with upstream Prefrontal Cortex seats.
+- **Object:** Per-token decode log-probabilities (`StreamTokenEvent.logprob`), `RoutingDecision`, repetition ratio, token-limit flag, and raw model `<tool_call>` blocks.
+- **Trigger:** Every `/v1/chat/completions` turn (non-streaming JSON or true token-by-token SSE streaming).
+- **Observable contract:**
+  - Full multi-turn conversation history (`system`, `user`, `assistant`, `tool`) and OpenAI `tools` definitions are passed natively to the tokenizer chat template.
+  - Native `<tool_call>` blocks (both Qwen3.5 XML `<function=...><parameter=...>` and JSON formats) are parsed into standard OpenAI `tool_calls` with `finish_reason="tool_calls"`.
+  - `evaluate_turn_confidence()` computes geometric-mean token probability, minimum token probability, NLL, and router margin, setting `escalate_to_cortex=True` (surfaced in `X-SUBCOR-Escalate`, `X-SUBCOR-Confidence`, and `subcor.confidence`) whenever mean probability drops below threshold, a localized uncertainty spike occurs, a repetition loop or token limit is hit, or a strict habitual seat receives an unmapped task.
+
+### 2.10 Portable Skill Specs & Cross-Kernel Recompilation (`SkillSpec`, `subcor recompile`)
+- **Actor:** Operator upgrading the frozen base kernel ("impact drill") to a newer or larger checkpoint.
+- **Object:** `skill_spec.json` stored alongside each Skill Unit's `manifest.json` (which records `base_kernel_id`) and exported into CaPheOS format-2 bundles.
+- **Trigger:** `subcor recompile --source-units ... --dest-state ... --tenant ... --model <new-kernel>`.
+- **Observable contract:**
+  - Treats `payload.scun` as a kernel-specific compiled binary and `skill_spec.json` as portable workflow source code (verified training pairs, locked eval/baseline cases, negative routing prompts, and hyperparameters).
+  - Recompiles every `ENABLED`/`CONFORMANT` unit onto the target kernel, runs the locked Conformance Gate, tags the new manifest with the target `base_kernel_id`, and leaves units in `CONFORMANT` (never self-enabling) for independent sign-off.
+  - Gracefully skips legacy units without `skill_spec.json` (`status="skipped_no_spec"`).
+
 ---
 
 ## 3. Architecture Decision Records (ADRs)
@@ -139,3 +157,11 @@ CONFORMANT | ENABLED ──(export)────────► CaPheOS module.js
 ### ADR-006: Tiny Dense Shared Core + Routed MoE Skill Units Over Native Small MoE
 - **Decision:** Implement MoE routing at the SUBCOR Skill Unit layer (`MoESkillRouter`) over a frozen dense 0.8B–4B shared core, rather than requiring a 26B–30B native MoE base checkpoint.
 - **Why:** Native MoE checkpoints still keep all experts in unified RAM (~14–16 GB at 4-bit), whereas a frozen 652 MB shared core + ~81 KiB routed Sub-1-Bit Skill Units fits 1,000+ skills inside ~1.5 GB RAM with zero cross-skill interference and zero general-knowledge regression.
+
+### ADR-007: Cortical-Subcortical Split ("Impact Drill + Recompilable Bits")
+- **Decision:** Treat SUBCOR strictly as a **procedural subcortical runtime** (workflows, tool usage, routing, parsing discipline) paired with normal context/RAG/MCP for factual memory and frontier models as the **Prefrontal Cortex** for novel planning and exceptions—connected via a live **Thalamic Uncertainty Switch** (`TurnConfidence` -> `X-SUBCOR-Escalate`).
+- **Why:** Storing dense encyclopedic knowledge in sub-1-bit weights fights physics, whereas encoding repeatable decision procedures and tool habits in `~81 KiB` routed bits lets small models outperform general-purpose multitool models on specialized routines while cleanly escalating out-of-distribution turns.
+
+### ADR-008: Portable `skill_spec.json` Source + `subcor recompile` for Kernel Upgrades
+- **Decision:** Accept that compiled `.scun` weight deltas are mathematically coupled to a specific `base_kernel_id`, and solve long-term portability by storing a sanitized `skill_spec.json` alongside every Skill Unit and providing `subcor recompile`.
+- **Why:** Just as software ships portable source code and recompiles binaries for new CPU architectures, storing the verified procedural spec + locked conformance cases lets an organization upgrade from a `0.8B` kernel to a newer `2B` or `4B` kernel and automatically re-verify its entire Skill Unit library without losing institutional habits.

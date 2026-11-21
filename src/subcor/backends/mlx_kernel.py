@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -28,10 +29,11 @@ import mlx.nn as nn
 import mlx.optimizers as optim
 import numpy as np
 from mlx.utils import tree_flatten
-from mlx_lm import generate, load
+from mlx_lm import load, stream_generate
 from mlx_lm.models.base import create_attention_mask, create_ssm_mask
 from mlx_lm.sample_utils import make_sampler
 
+from subcor.confidence import parse_tool_calls
 from subcor.expansion import LowRankAdapter
 from subcor.intern import ngram_repetition_ratio
 from subcor.router import MoESkillRouter, RoutingDecision
@@ -49,7 +51,7 @@ def _ste_sign_pm1(z: mx.array) -> mx.array:
 
 @dataclass(frozen=True)
 class GenerationTrace:
-    """Result of one deterministic MLX generation with optional activation capture."""
+    """Result of one deterministic MLX generation with logprobs, tool calls, and activations."""
 
     prompt: str
     response: str
@@ -57,6 +59,23 @@ class GenerationTrace:
     hit_token_limit: bool
     repetition_ratio: float
     layer_activations: dict[str, np.ndarray]
+    prompt_tokens: int = 0
+    token_logprobs: tuple[float, ...] = ()
+    tool_calls: tuple[dict[str, Any], ...] = ()
+    raw_response: str = ""
+
+
+@dataclass(frozen=True)
+class StreamTokenEvent:
+    """Incremental token emitted during true token-by-token MLX streaming."""
+
+    text: str
+    token_id: int
+    logprob: float
+    prompt_tokens: int
+    generation_tokens: int
+    finish_reason: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 class SubcorMLXLinear(nn.Module):
@@ -332,17 +351,31 @@ class MLXKernel:
         self._greedy_sampler = make_sampler(temp=0.0)
         self._verified_unit_cache: dict[str, tuple[str, list[tuple[str, LowRankAdapter]]]] = {}
 
-    def format_chat_prompt(
+    def format_messages(
         self,
-        user_prompt: str,
+        messages: list[dict[str, Any]],
         *,
-        system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
         enable_thinking: bool = False,
     ) -> str:
-        messages: list[dict[str, str]] = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": user_prompt})
+        """Render full multi-turn OpenAI messages (+ optional tool schemas) via chat template."""
+        cleaned: list[dict[str, Any]] = []
+        for msg in messages:
+            role = str(msg.get("role", "user"))
+            entry: dict[str, Any] = {"role": role}
+            content = msg.get("content")
+            if content is not None:
+                entry["content"] = str(content)
+            elif role != "assistant":
+                entry["content"] = ""
+            if "tool_calls" in msg and msg["tool_calls"]:
+                entry["tool_calls"] = msg["tool_calls"]
+            if "tool_call_id" in msg and msg["tool_call_id"]:
+                entry["tool_call_id"] = str(msg["tool_call_id"])
+            if "name" in msg and msg["name"]:
+                entry["name"] = str(msg["name"])
+            cleaned.append(entry)
+
         kwargs: dict[str, Any] = {
             "tokenize": False,
             "add_generation_prompt": True,
@@ -350,7 +383,123 @@ class MLXKernel:
         template = getattr(self.tokenizer, "chat_template", "") or ""
         if "enable_thinking" in template:
             kwargs["enable_thinking"] = enable_thinking
-        return str(self.tokenizer.apply_chat_template(messages, **kwargs))
+        if tools:
+            kwargs["tools"] = tools
+        try:
+            return str(self.tokenizer.apply_chat_template(cleaned, **kwargs))
+        except TypeError:
+            # Fallback if a custom tokenizer template does not accept `tools`.
+            kwargs.pop("tools", None)
+            return str(self.tokenizer.apply_chat_template(cleaned, **kwargs))
+
+    def format_chat_prompt(
+        self,
+        user_prompt: str,
+        *,
+        system_prompt: str | None = None,
+        enable_thinking: bool = False,
+    ) -> str:
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": user_prompt})
+        return self.format_messages(messages, enable_thinking=enable_thinking)
+
+    def stream_formatted(
+        self,
+        formatted_prompt: str,
+        *,
+        max_tokens: int = 128,
+        capture_activations: bool = False,
+    ) -> Iterator[StreamTokenEvent]:
+        """Yield true token-by-token StreamTokenEvents with exact per-token logprobs."""
+        if capture_activations:
+            for layer in self.instrumented.values():
+                layer.start_recording()
+
+        for resp in stream_generate(
+            self.model,
+            self.tokenizer,
+            prompt=formatted_prompt,
+            max_tokens=max_tokens,
+            sampler=self._greedy_sampler,
+        ):
+            tok_id = int(resp.token)
+            lp = 0.0
+            if resp.logprobs is not None:
+                lp = float(resp.logprobs[tok_id].item())
+            yield StreamTokenEvent(
+                text=str(resp.text),
+                token_id=tok_id,
+                logprob=lp,
+                prompt_tokens=int(resp.prompt_tokens),
+                generation_tokens=int(resp.generation_tokens),
+                finish_reason=resp.finish_reason,
+            )
+
+    def generate_messages_with_trace(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 128,
+        enable_thinking: bool = False,
+        capture_activations: bool = False,
+    ) -> GenerationTrace:
+        """Run deterministic greedy multi-turn generation capturing logprobs & tool calls."""
+        formatted = self.format_messages(
+            messages,
+            tools=tools,
+            enable_thinking=enable_thinking,
+        )
+        chunks: list[str] = []
+        logprobs: list[float] = []
+        prompt_tokens = 0
+        n_tokens = 0
+        finish_reason: str | None = None
+
+        try:
+            for ev in self.stream_formatted(
+                formatted,
+                max_tokens=max_tokens,
+                capture_activations=capture_activations,
+            ):
+                chunks.append(ev.text)
+                logprobs.append(ev.logprob)
+                prompt_tokens = ev.prompt_tokens
+                n_tokens = ev.generation_tokens
+                finish_reason = ev.finish_reason
+        finally:
+            activations: dict[str, np.ndarray] = {}
+            if capture_activations:
+                for name, layer in self.instrumented.items():
+                    mean_vec = layer.stop_recording()
+                    if mean_vec is not None:
+                        activations[name] = mean_vec
+
+        raw_response = "".join(chunks)
+        clean_response, parsed_tools = (
+            parse_tool_calls(raw_response) if tools else (raw_response, [])
+        )
+        hit_limit = (finish_reason == "length") or (n_tokens >= max_tokens)
+        rep = ngram_repetition_ratio(raw_response)
+        last_user = next(
+            (str(m.get("content", "")) for m in reversed(messages) if m.get("role") == "user"),
+            "",
+        )
+
+        return GenerationTrace(
+            prompt=last_user,
+            response=clean_response,
+            tokens_generated=n_tokens,
+            hit_token_limit=hit_limit,
+            repetition_ratio=rep,
+            layer_activations=activations,
+            prompt_tokens=prompt_tokens,
+            token_logprobs=tuple(logprobs),
+            tool_calls=tuple(parsed_tools),
+            raw_response=raw_response,
+        )
 
     def generate_with_trace(
         self,
@@ -361,45 +510,16 @@ class MLXKernel:
         enable_thinking: bool = False,
         capture_activations: bool = False,
     ) -> GenerationTrace:
-        """Run deterministic greedy generation with optional per-layer activation capture."""
-        formatted = self.format_chat_prompt(
-            user_prompt,
-            system_prompt=system_prompt,
+        """Run deterministic greedy single-turn generation with logprobs & activation capture."""
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": user_prompt})
+        return self.generate_messages_with_trace(
+            messages,
+            max_tokens=max_tokens,
             enable_thinking=enable_thinking,
-        )
-        if capture_activations:
-            for layer in self.instrumented.values():
-                layer.start_recording()
-
-        try:
-            response = generate(
-                self.model,
-                self.tokenizer,
-                prompt=formatted,
-                max_tokens=max_tokens,
-                sampler=self._greedy_sampler,
-                verbose=False,
-            )
-        finally:
-            activations: dict[str, np.ndarray] = {}
-            if capture_activations:
-                for name, layer in self.instrumented.items():
-                    mean_vec = layer.stop_recording()
-                    if mean_vec is not None:
-                        activations[name] = mean_vec
-
-        token_ids = self.tokenizer.encode(response, add_special_tokens=False)
-        n_tokens = len(token_ids)
-        hit_limit = n_tokens >= max_tokens
-        rep = ngram_repetition_ratio(response)
-
-        return GenerationTrace(
-            prompt=user_prompt,
-            response=response,
-            tokens_generated=n_tokens,
-            hit_token_limit=hit_limit,
-            repetition_ratio=rep,
-            layer_activations=activations,
+            capture_activations=capture_activations,
         )
 
     def probe_logits(
@@ -525,6 +645,88 @@ class MLXKernel:
         norm = float(np.linalg.norm(mean_act))
         return mean_act / norm if norm > 1e-12 else mean_act
 
+    def generate_routed_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        router: MoESkillRouter,
+        registry: SkillUnitRegistry,
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 128,
+        enable_thinking: bool = False,
+        top_k: int = 1,
+        capture_activations: bool = False,
+    ) -> tuple[GenerationTrace, RoutingDecision]:
+        """Route full multi-turn messages using frozen-base activations of the active user turn."""
+        last_user = next(
+            (str(m.get("content", "")) for m in reversed(messages) if m.get("role") == "user"),
+            "",
+        )
+        emb = self.encode_prompt_embedding(
+            last_user,
+            tap_layer=router.tap_layer,
+            system_prompt=None,
+            enable_thinking=False,
+        )
+        decision = router.route(emb, top_k=top_k)
+
+        for uid in decision.selected_units:
+            self.mount_unit(uid, registry)
+        try:
+            trace = self.generate_messages_with_trace(
+                messages,
+                tools=tools,
+                max_tokens=max_tokens,
+                enable_thinking=enable_thinking,
+                capture_activations=capture_activations,
+            )
+        finally:
+            for uid in decision.selected_units:
+                self.unmount_unit(uid)
+
+        return trace, decision
+
+    def stream_routed_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        router: MoESkillRouter | None,
+        registry: SkillUnitRegistry | None,
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 128,
+        enable_thinking: bool = False,
+        top_k: int = 1,
+    ) -> tuple[RoutingDecision, Iterator[StreamTokenEvent]]:
+        """Route once, then return a live token-by-token iterator that cleans up mounts on exit."""
+        last_user = next(
+            (str(m.get("content", "")) for m in reversed(messages) if m.get("role") == "user"),
+            "",
+        )
+        if router is not None and registry is not None and router.registered_units:
+            emb = self.encode_prompt_embedding(
+                last_user,
+                tap_layer=router.tap_layer,
+                system_prompt=None,
+                enable_thinking=False,
+            )
+            decision = router.route(emb, top_k=top_k)
+        else:
+            decision = RoutingDecision(selected_units=(), scores={}, thresholds={})
+
+        formatted = self.format_messages(messages, tools=tools, enable_thinking=enable_thinking)
+
+        def _gen() -> Iterator[StreamTokenEvent]:
+            for uid in decision.selected_units:
+                assert registry is not None
+                self.mount_unit(uid, registry)
+            try:
+                yield from self.stream_formatted(formatted, max_tokens=max_tokens)
+            finally:
+                for uid in decision.selected_units:
+                    self.unmount_unit(uid)
+
+        return decision, _gen()
+
     def generate_routed(
         self,
         user_prompt: str,
@@ -537,35 +739,20 @@ class MLXKernel:
         top_k: int = 1,
         capture_activations: bool = False,
     ) -> tuple[GenerationTrace, RoutingDecision]:
-        """Route a prompt through MoESkillRouter using frozen-base activations and generate.
-
-        Routing always inspects `user_prompt` without a task-specific system prompt
-        so expert selection is strictly semantic. Only selected Skill Units are mounted
-        for this turn; 0 selected units runs on the pure frozen shared base kernel.
-        """
-        emb = self.encode_prompt_embedding(
-            user_prompt,
-            tap_layer=router.tap_layer,
-            system_prompt=None,
-            enable_thinking=False,
+        """Route a single user prompt through MoESkillRouter using frozen-base activations."""
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": user_prompt})
+        return self.generate_routed_messages(
+            messages,
+            router=router,
+            registry=registry,
+            max_tokens=max_tokens,
+            enable_thinking=enable_thinking,
+            top_k=top_k,
+            capture_activations=capture_activations,
         )
-        decision = router.route(emb, top_k=top_k)
-
-        for uid in decision.selected_units:
-            self.mount_unit(uid, registry)
-        try:
-            trace = self.generate_with_trace(
-                user_prompt,
-                system_prompt=system_prompt,
-                max_tokens=max_tokens,
-                enable_thinking=enable_thinking,
-                capture_activations=capture_activations,
-            )
-        finally:
-            for uid in decision.selected_units:
-                self.unmount_unit(uid)
-
-        return trace, decision
 
     def train_qlora_adapters(
         self,

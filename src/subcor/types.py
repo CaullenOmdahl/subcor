@@ -211,6 +211,7 @@ class SkillUnitManifest:
     effective_bits_per_weight: float
     state: UnitState = UnitState.DORMANT
     approver: str | None = None
+    base_kernel_id: str = "unknown"
     license: str = "Apache-2.0"
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     conformance: ConformanceReport | None = None
@@ -230,6 +231,7 @@ class SkillUnitManifest:
             "effective_bits_per_weight": self.effective_bits_per_weight,
             "state": self.state.value,
             "approver": self.approver,
+            "base_kernel_id": self.base_kernel_id,
             "license": self.license,
             "created_at": self.created_at,
             "conformance": None if self.conformance is None else self.conformance.to_dict(),
@@ -251,6 +253,7 @@ class SkillUnitManifest:
             effective_bits_per_weight=float(data["effective_bits_per_weight"]),
             state=UnitState(data["state"]),
             approver=data.get("approver"),
+            base_kernel_id=str(data.get("base_kernel_id", "unknown")),
             license=str(data.get("license", "Apache-2.0")),
             created_at=str(data.get("created_at", datetime.now(UTC).isoformat())),
             conformance=(
@@ -258,4 +261,74 @@ class SkillUnitManifest:
                 if data.get("conformance") is None
                 else ConformanceReport.from_dict(data["conformance"])
             ),
+        )
+
+
+@dataclass(frozen=True)
+class SkillSpec:
+    """Portable sanitized workflow specification ("source code" for a Skill Unit).
+
+    Allows `subcor recompile` to rebuild compiled `.scun` weights and `RouterGate`
+    whenever the underlying frozen base kernel is upgraded to a new model.
+    """
+
+    unit_id: str
+    version: str
+    title: str
+    summary: str
+    task_family: str
+    proposer: str
+    system_prompt: str | None
+    training_pairs: tuple[tuple[str, str], ...]
+    eval_cases: tuple[dict[str, str], ...]
+    baseline_cases: tuple[dict[str, str], ...]
+    negative_prompts: tuple[str, ...]
+    rank: int = 8
+    sub1bit_rank: int = 8
+    steps: int = 108
+    lr: float = 3e-4
+    max_regression_tolerance: float = 0.02
+    min_target_improvement: float = 0.25
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "unit_id": self.unit_id,
+            "version": self.version,
+            "title": self.title,
+            "summary": self.summary,
+            "task_family": self.task_family,
+            "proposer": self.proposer,
+            "system_prompt": self.system_prompt,
+            "training_pairs": [[p, t] for p, t in self.training_pairs],
+            "eval_cases": [dict(c) for c in self.eval_cases],
+            "baseline_cases": [dict(c) for c in self.baseline_cases],
+            "negative_prompts": list(self.negative_prompts),
+            "rank": self.rank,
+            "sub1bit_rank": self.sub1bit_rank,
+            "steps": self.steps,
+            "lr": self.lr,
+            "max_regression_tolerance": self.max_regression_tolerance,
+            "min_target_improvement": self.min_target_improvement,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SkillSpec:
+        return cls(
+            unit_id=str(data["unit_id"]),
+            version=str(data["version"]),
+            title=str(data["title"]),
+            summary=str(data["summary"]),
+            task_family=str(data["task_family"]),
+            proposer=str(data.get("proposer", "tools")),
+            system_prompt=data.get("system_prompt"),
+            training_pairs=tuple((str(p), str(t)) for p, t in data["training_pairs"]),
+            eval_cases=tuple(dict(c) for c in data.get("eval_cases", [])),
+            baseline_cases=tuple(dict(c) for c in data.get("baseline_cases", [])),
+            negative_prompts=tuple(str(p) for p in data.get("negative_prompts", [])),
+            rank=int(data.get("rank", 8)),
+            sub1bit_rank=int(data.get("sub1bit_rank", 8)),
+            steps=int(data.get("steps", 108)),
+            lr=float(data.get("lr", 3e-4)),
+            max_regression_tolerance=float(data.get("max_regression_tolerance", 0.02)),
+            min_target_improvement=float(data.get("min_target_improvement", 0.25)),
         )

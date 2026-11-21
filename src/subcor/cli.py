@@ -398,6 +398,23 @@ def _run_bench_cli(args: argparse.Namespace) -> int:
     return 1
 
 
+def _run_recompile_cli(args: argparse.Namespace) -> int:
+    from subcor.recompile import recompile_units_for_kernel
+    from subcor.server import MLXServingAdapter
+
+    kernel = MLXServingAdapter(model_id=args.target_model)
+    report = recompile_units_for_kernel(
+        source_units_dir=args.source_units.expanduser().resolve(),
+        dest_state_dir=args.dest_state_dir.expanduser().resolve(),
+        target_tenant=args.tenant,
+        kernel=kernel,
+        steps_override=args.steps,
+        seed=args.seed,
+    )
+    print(json.dumps(report.to_dict(), indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="subcor",
@@ -566,6 +583,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     b_exp.add_argument("--out", type=Path, required=True)
 
+    recomp_cmd = sub.add_parser(
+        "recompile",
+        help="Recompile portable Skill Units (from skill_spec.json) onto a new base kernel.",
+    )
+    recomp_cmd.add_argument(
+        "--source-units", type=Path, required=True, help="Source units directory."
+    )
+    recomp_cmd.add_argument(
+        "--target-model", type=str, required=True, help="New target MLX base model ID."
+    )
+    recomp_cmd.add_argument(
+        "--dest-state-dir",
+        type=Path,
+        default=Path.home() / ".local" / "share" / "subcor",
+    )
+    recomp_cmd.add_argument("--tenant", type=str, required=True, help="Target tenant ID.")
+    recomp_cmd.add_argument(
+        "--steps", type=int, default=None, help="Optional training step override."
+    )
+    recomp_cmd.add_argument("--seed", type=int, default=42)
+
     inspect_cmd = sub.add_parser(
         "inspect",
         help="Inspect registered Skill Units and verify SHA-256 integrity in a unit store.",
@@ -613,6 +651,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "bench":
         return _run_bench_cli(args)
+
+    if args.command == "recompile":
+        return _run_recompile_cli(args)
 
     if args.command == "inspect":
         registry = SkillUnitRegistry(args.units_dir)

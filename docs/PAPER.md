@@ -30,6 +30,17 @@ Four structural barriers have prevented small local models from acting as genuin
 
 SUBCOR resolves these four barriers by unifying four complementary mechanisms around a single portable artifact—the **Governed Sub-1-Bit Skill Unit**—designed to run standalone or alongside governed agent operating systems such as CaPheOS.
 
+### 1.1 Cognitive Framing: The Cortical-Subcortical Architecture ("Impact Drill + Recompilable Bits")
+
+Crucially, SUBCOR is **not** designed to pack encyclopedic factual databases into neural weights. Factual memory remains where modern AI systems already handle it cleanly: loaded dynamically into context via RAG, documents, and MCP tools (**Working Memory**). Instead, SUBCOR models the biological division of labor observed in mammalian skill acquisition:
+
+- **Prefrontal Cortex (Frontier Senior Seats):** Deliberative planning, novel problem solving, exception handling, and verification when a workflow changes or has not yet been learned.
+- **Basal Ganglia (`MoESkillRouter` + `RouterGate`):** Rapid, invariant recognition of familiar routines (`18.3 ms` early-exit tap), selecting the matching habitual policy without conscious re-planning.
+- **Cerebellum (`~81 KiB` Sub-1-Bit Skill Units):** High-precision procedural execution—structured JSON/tool formatting, routing, parsing discipline, and policy gates—compiled into compact swappable weight deltas.
+- **Thalamic Uncertainty Switch (`TurnConfidence` / `X-SUBCOR-Escalate`):** Monitors decode-time token log-probabilities, router margin, and loop telemetry on every turn; when uncertainty spikes or a routine falls outside verified habits, control hands back seamlessly to the Prefrontal Cortex.
+
+In engineering terms, the frozen compact base kernel is an **impact drill**, and each `~81 KiB` Skill Unit is a **specialized drill bit**. Rather than training one massive multitool to know every organization's workflows, a small, disciplined tool equipped with the right bits and live MCP tools executes repeatable workflows faster and more reliably. Compiled `.scun` binaries remain coupled to a specific `base_kernel_id`, while each unit's companion `skill_spec.json` acts as portable workflow source code so upgrading the drill automatically recompiles and re-verifies every bit (`subcor recompile`).
+
 ---
 
 ## 2. Related Work
@@ -120,7 +131,18 @@ Four invariants are enforced in code:
 - **Content Integrity:** Every load, promotion, and export verifies payload SHA-256 against `manifest.payload_sha256` (fail-closed `IntegrityError`).
 - **Locked Conformance Gate:** Candidate units must improve target capability by $\ge \Delta_{\min}$ while keeping baseline regression within tolerance $\epsilon_{\max}$.
 - **No Self-Approval:** `promote(unit_id, approver)` raises `GovernanceError` whenever `approver == manifest.proposer`.
-- **Multi-Tenant Serving & Portable Export:** `SubcorHTTPServer` shares one frozen base kernel across $N$ isolated tenants (`subcor/<tenant_id>`), each with its own unit registry, trajectory store, and MoE router. Promoted units export to both **CaPheOS format-2 `module.json` bundles** (with runnable Node `conformance/test.js`) and stock **`mlx-lm` `adapters.safetensors`**.
+- **Multi-Tenant Serving, Tool Calling, Streaming & Portable Export:** `SubcorHTTPServer` shares one frozen base kernel across $N$ isolated tenants (`subcor/<tenant_id>`), each with its own unit registry, trajectory store, and MoE router. `/v1/chat/completions` preserves full multi-turn conversation history, accepts OpenAI `tools` definitions and parses native XML/JSON `<tool_call>` blocks into structured `tool_calls`, and streams tokens incrementally via `mlx_lm.stream_generate` SSE. Promoted units export to both **CaPheOS format-2 `module.json` bundles** (including `router_gate.json`, `skill_spec.json`, `baseKernelId`, and runnable Node `conformance/test.js`) and stock **`mlx-lm` `adapters.safetensors`**.
+
+### 3.7 Cortical Handoff (`TurnConfidence`) & Cross-Kernel Recompilation (`subcor recompile`)
+
+To close the loop between subcortical speed and cortical reliability, every inference turn records per-token decode log-probabilities $\{ \ell_t \}_{t=1}^T$ alongside router margin $m = s_{u^*} - \tau_{u^*}$, repetition ratio, and token-limit exhaustion. `evaluate_turn_confidence()` computes geometric-mean token probability $\bar{p} = \exp(\frac{1}{T}\sum_t \ell_t)$ and worst-token probability $p_{\min} = \exp(\min_t \ell_t)$, raising `escalate_to_cortex = True` (surfaced via HTTP headers `X-SUBCOR-Escalate` and `X-SUBCOR-Confidence` and in `subcor.confidence`) whenever:
+1. the token budget is exhausted (`token_limit_exhausted`),
+2. n-gram repetition exceeds policy (`repetition_loop_detected`),
+3. a strict habitual seat receives an unmapped prompt (`no_matching_skill_unit`),
+4. $\bar{p} < 0.55$ (`low_decode_confidence`), or
+5. a localized uncertainty spike occurs ($p_{\min} < 0.05$ with $\bar{p} < 0.72$).
+
+To make learned habits durable across base-model upgrades, every Study Cycle persists a sanitized `skill_spec.json` (verified `(prompt, target)` pairs, locked evaluation and baseline anchor cases, negative routing prompts, and training hyperparameters) alongside the kernel-tagged manifest (`base_kernel_id`). Running `subcor recompile` against a newer or larger base checkpoint retrains each eligible unit from its `skill_spec.json`, passes it through the locked Conformance Gate, and places passing units in `CONFORMANT` (never self-enabled) for independent approval.
 
 ---
 
@@ -191,7 +213,7 @@ Reporting negative outcomes is central to evaluating self-modifying systems hone
 1. **Base Kernel Intelligence Ceiling:** A `0.8B` model augmented with `81 KiB` Skill Units excels at repeatable structured tasks (routing, schemas, policies, triage) but cannot replace frontier models for ambiguous long-horizon reasoning. SUBCOR targets the *Intern* tier—graduating routine work locally while escalating hard cases.
 2. **Low-Rank Compression Suits Skills, Not Databases:** Binary rank-8 factorization compresses procedural skills cleanly to `0.03 bpw`, but dense factual catalogs belong in external databases, files, and MCP tools rather than weights.
 3. **Flat Cosine Routing at Scale:** Single-centroid gates separated 2 distinct domains at `100%`, but scaling to `50+` overlapping skills will require hierarchical routing (e.g., scoping candidate gates by organizational seat before scoring embeddings).
-4. **Compiled-Artifact Coupling:** Each `weights.scun` payload is mathematically coupled to its base kernel's coordinate system. The **verified trajectory log** is the durable cross-generation "source code"; upgrading the base kernel recompiles Skill Units from verified logs in minutes.
+4. **Compiled-Artifact Coupling:** Each `weights.scun` payload is mathematically coupled to its `base_kernel_id` coordinate system. SUBCOR treats `skill_spec.json` + verified trajectory logs as the durable cross-generation "source code"; upgrading the base kernel recompiles and re-verifies all Skill Units automatically via `subcor recompile`.
 5. **Single-GPU Study Contention:** On consumer hardware, QLoRA study jobs (`~45–90s`) saturate the GPU queue and should run during scheduled off-peak windows.
 
 ---
@@ -202,7 +224,7 @@ All experiments are reproducible from the repository root:
 
 ```bash
 uv sync --extra dev --extra mlx --python 3.12
-uv run pytest -v                              # 25 deterministic unit & integration tests
+uv run pytest -v                              # 31 deterministic unit & integration tests
 uv run subcor demo                           # Milestone 1 synthetic proving ground
 uv run --extra mlx subcor mlx-intern         # Live single-skill QLoRA -> Sub-1-Bit
 uv run --extra mlx subcor mlx-moe            # Live two-expert Routed MoE

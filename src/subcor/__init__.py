@@ -19,8 +19,15 @@ from subcor.benchmark import (
     run_benchmark_http,
     run_benchmark_local,
 )
+from subcor.confidence import (
+    ConfidencePolicy,
+    TurnConfidence,
+    evaluate_turn_confidence,
+    parse_tool_calls,
+)
 from subcor.expansion import ElasticLinear, LowRankAdapter
 from subcor.proving_ground import MicroInternNet, ProvingGroundReport, run_proving_ground
+from subcor.recompile import RecompiledUnitOutcome, RecompileReport, recompile_units_for_kernel
 from subcor.router import MoESkillRouter, RouterGate, RoutingDecision
 from subcor.sub1bit import Sub1BitMatrix, factorize_sub1bit, relative_frobenius_error
 from subcor.surgeon import LayerDiagnosis, SurgicalPatch, WeightSpaceSurgeon
@@ -31,6 +38,7 @@ from subcor.types import (
     DeltaEncoding,
     GovernanceError,
     IntegrityError,
+    SkillSpec,
     SkillUnitManifest,
     SubcorError,
     TrajectoryRecord,
@@ -50,6 +58,7 @@ __all__ = [
     "BenchmarkSnapshot",
     "BenchmarkSuite",
     "CaseResult",
+    "ConfidencePolicy",
     "ConformanceReport",
     "DeltaEncoding",
     "ElasticLinear",
@@ -62,8 +71,11 @@ __all__ = [
     "MicroInternNet",
     "MoESkillRouter",
     "ProvingGroundReport",
+    "RecompileReport",
+    "RecompiledUnitOutcome",
     "RouterGate",
     "RoutingDecision",
+    "SkillSpec",
     "SkillUnitManifest",
     "SkillUnitRegistry",
     "SubcorError",
@@ -71,6 +83,7 @@ __all__ = [
     "SurgicalPatch",
     "TrajectoryRecord",
     "TrajectoryStore",
+    "TurnConfidence",
     "UnitState",
     "VerificationError",
     "VerificationEvidence",
@@ -79,8 +92,11 @@ __all__ = [
     "build_layer_delta",
     "compare_snapshots",
     "core_v1_suite",
+    "evaluate_turn_confidence",
     "factorize_sub1bit",
     "grade_response",
+    "parse_tool_calls",
+    "recompile_units_for_kernel",
     "relative_frobenius_error",
     "render_markdown_report",
     "run_benchmark_http",

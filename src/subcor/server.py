@@ -32,7 +32,8 @@ import re
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from collections.abc import Iterator
+from dataclasses import dataclass, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -41,6 +42,11 @@ from urllib.parse import urlparse
 
 import numpy as np
 
+from subcor.confidence import (
+    ConfidencePolicy,
+    TurnConfidence,
+    evaluate_turn_confidence,
+)
 from subcor.expansion import LowRankAdapter
 from subcor.intern import TextTrajectory, TextTrajectoryStore, ngram_repetition_ratio
 from subcor.router import MoESkillRouter, RouterGate, RoutingDecision
@@ -49,6 +55,7 @@ from subcor.types import (
     DeltaEncoding,
     GovernanceError,
     IntegrityError,
+    SkillSpec,
     SkillUnitManifest,
     UnitState,
     VerificationError,
@@ -77,6 +84,9 @@ class InferenceResult:
     hit_token_limit: bool
     repetition_ratio: float
     routing: RoutingDecision
+    tool_calls: tuple[dict[str, Any], ...] = ()
+    token_logprobs: tuple[float, ...] = ()
+    confidence: TurnConfidence | None = None
 
 
 class ServingKernel(Protocol):
@@ -138,6 +148,68 @@ class MLXServingAdapter:
         self.target_layers = tuple(sorted(self._kernel.instrumented.keys()))
         self.tap_layer = self.target_layers[0]
 
+    def generate_routed_messages(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        router: MoESkillRouter | None,
+        registry: SkillUnitRegistry | None,
+        max_tokens: int,
+        enable_thinking: bool,
+        top_k: int,
+    ) -> InferenceResult:
+        if router is not None and registry is not None and router.registered_units:
+            trace, decision = self._kernel.generate_routed_messages(
+                messages,
+                router=router,
+                registry=registry,
+                tools=tools,
+                max_tokens=max_tokens,
+                enable_thinking=enable_thinking,
+                top_k=top_k,
+            )
+        else:
+            trace = self._kernel.generate_messages_with_trace(
+                messages,
+                tools=tools,
+                max_tokens=max_tokens,
+                enable_thinking=enable_thinking,
+            )
+            decision = RoutingDecision(selected_units=(), scores={}, thresholds={})
+
+        return InferenceResult(
+            text=trace.response,
+            prompt_tokens=trace.prompt_tokens,
+            completion_tokens=trace.tokens_generated,
+            hit_token_limit=trace.hit_token_limit,
+            repetition_ratio=trace.repetition_ratio,
+            routing=decision,
+            tool_calls=trace.tool_calls,
+            token_logprobs=trace.token_logprobs,
+        )
+
+    def stream_routed_messages(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        router: MoESkillRouter | None,
+        registry: SkillUnitRegistry | None,
+        max_tokens: int,
+        enable_thinking: bool,
+        top_k: int,
+    ) -> tuple[RoutingDecision, Iterator[Any]]:
+        return self._kernel.stream_routed_messages(
+            messages,
+            router=router,
+            registry=registry,
+            tools=tools,
+            max_tokens=max_tokens,
+            enable_thinking=enable_thinking,
+            top_k=top_k,
+        )
+
     def generate_routed_chat(
         self,
         *,
@@ -149,39 +221,18 @@ class MLXServingAdapter:
         enable_thinking: bool,
         top_k: int,
     ) -> InferenceResult:
-        formatted = self._kernel.format_chat_prompt(
-            user_prompt,
-            system_prompt=system_prompt,
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": user_prompt})
+        return self.generate_routed_messages(
+            messages=messages,
+            tools=None,
+            router=router,
+            registry=registry,
+            max_tokens=max_tokens,
             enable_thinking=enable_thinking,
-        )
-        prompt_tokens = len(self._kernel.tokenizer.encode(formatted))
-
-        if router is not None and registry is not None and router.registered_units:
-            trace, decision = self._kernel.generate_routed(
-                user_prompt,
-                router=router,
-                registry=registry,
-                system_prompt=system_prompt,
-                max_tokens=max_tokens,
-                enable_thinking=enable_thinking,
-                top_k=top_k,
-            )
-        else:
-            trace = self._kernel.generate_with_trace(
-                user_prompt,
-                system_prompt=system_prompt,
-                max_tokens=max_tokens,
-                enable_thinking=enable_thinking,
-            )
-            decision = RoutingDecision(selected_units=(), scores={}, thresholds={})
-
-        return InferenceResult(
-            text=trace.response,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=trace.tokens_generated,
-            hit_token_limit=trace.hit_token_limit,
-            repetition_ratio=trace.repetition_ratio,
-            routing=decision,
+            top_k=top_k,
         )
 
     def encode_prompt_embedding(self, user_prompt: str) -> np.ndarray:
@@ -330,13 +381,15 @@ class TenantManager:
         tenant: TenantContext | None,
         use_base_only: bool,
         messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 128,
         enable_thinking: bool = False,
         top_k: int = 1,
         seat: str = "intern",
+        confidence_policy: ConfidencePolicy | None = None,
         record_telemetry: bool = True,
     ) -> InferenceResult:
-        """Execute one serialized routed chat completion on the shared frozen kernel."""
+        """Execute one serialized multi-turn routed chat completion with confidence scoring."""
         system_parts = [str(m.get("content", "")) for m in messages if m.get("role") == "system"]
         user_parts = [str(m.get("content", "")) for m in messages if m.get("role") == "user"]
         if not user_parts:
@@ -344,16 +397,40 @@ class TenantManager:
         system_prompt = "\n".join(system_parts).strip() or None
         user_prompt = user_parts[-1]
 
+        active_router = None if (use_base_only or tenant is None) else tenant.router
+        active_registry = None if (use_base_only or tenant is None) else tenant.registry
+
         with self.lock:
-            result = self.kernel.generate_routed_chat(
-                user_prompt=user_prompt,
-                system_prompt=system_prompt,
-                router=None if (use_base_only or tenant is None) else tenant.router,
-                registry=None if (use_base_only or tenant is None) else tenant.registry,
-                max_tokens=max_tokens,
-                enable_thinking=enable_thinking,
-                top_k=top_k,
-            )
+            multi_fn = getattr(self.kernel, "generate_routed_messages", None)
+            if callable(multi_fn):
+                result = multi_fn(
+                    messages=messages,
+                    tools=tools,
+                    router=active_router,
+                    registry=active_registry,
+                    max_tokens=max_tokens,
+                    enable_thinking=enable_thinking,
+                    top_k=top_k,
+                )
+            else:
+                result = self.kernel.generate_routed_chat(
+                    user_prompt=user_prompt,
+                    system_prompt=system_prompt,
+                    router=active_router,
+                    registry=active_registry,
+                    max_tokens=max_tokens,
+                    enable_thinking=enable_thinking,
+                    top_k=top_k,
+                )
+
+        conf = evaluate_turn_confidence(
+            token_logprobs=list(result.token_logprobs),
+            routing=result.routing,
+            hit_token_limit=result.hit_token_limit,
+            repetition_ratio=result.repetition_ratio,
+            policy=confidence_policy,
+        )
+        result = replace(result, confidence=conf)
 
         if record_telemetry and tenant is not None:
             # Live runtime responses start UNVERIFIED until CaPheOS verifies them.
@@ -372,7 +449,11 @@ class TenantManager:
                         verified=False,
                         verifier="pending",
                         method="live_inference_unverified",
-                        notes=f"routed={list(result.routing.selected_units)}",
+                        notes=(
+                            f"routed={list(result.routing.selected_units)} "
+                            f"escalate={conf.escalate_to_cortex} "
+                            f"prob={conf.mean_token_prob:.3f}"
+                        ),
                     ),
                 )
             )
@@ -517,8 +598,9 @@ class TenantManager:
                     title=title,
                     summary=summary,
                     proposer=proposer,
-                    mode=AdaptationMode.DYNAMIC_EXPANSION_STE,
+                    mode=AdaptationMode.DYNAMIC_EXPANSION_FP32,
                     deltas=deltas,
+                    base_kernel_id=self.kernel.model_id,
                 )
                 gate = RouterGate.fit(
                     unit_id=unit_id,
@@ -527,6 +609,27 @@ class TenantManager:
                     neg_embeddings=neg_embs,
                 )
                 ctx.registry.save_router_gate(gate)
+                ctx.registry.save_skill_spec(
+                    SkillSpec(
+                        unit_id=unit_id,
+                        version=version,
+                        title=title,
+                        summary=summary,
+                        task_family=task_family,
+                        proposer=proposer,
+                        system_prompt=system_prompt,
+                        training_pairs=tuple((p, t) for p, t in pairs),
+                        eval_cases=tuple({"prompt": p, "expected": e} for p, e in target_eval),
+                        baseline_cases=tuple({"prompt": p, "expected": e} for p, e in base_eval),
+                        negative_prompts=tuple(neg_prompts),
+                        rank=rank,
+                        sub1bit_rank=sub1bit_rank,
+                        steps=steps,
+                        lr=lr,
+                        max_regression_tolerance=max_regression_tolerance,
+                        min_target_improvement=min_target_improvement,
+                    )
+                )
 
                 # Sandbox-register gate for locked conformance evaluation, then unregister
                 # so the unit NEVER becomes live before independent approver sign-off.
@@ -761,7 +864,7 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": f"Invalid JSON: {exc}"})
             return
 
-        # 1. OpenAI-compatible chat completions (non-streaming & SSE streaming).
+        # 1. OpenAI-compatible chat completions (multi-turn, tools/tool_calls, true SSE streaming).
         if path == "/v1/chat/completions":
             try:
                 model_field = body.get("model")
@@ -774,52 +877,200 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
                 messages = body.get("messages")
                 if not isinstance(messages, list):
                     raise ValueError("messages must be a list")
+                tools = body.get("tools")
+                if tools is not None and not isinstance(tools, list):
+                    raise ValueError("tools must be a list when provided")
                 max_tokens = int(body.get("max_tokens", 128))
                 stream = bool(body.get("stream", False))
                 enable_thinking = bool(body.get("enable_thinking", False))
                 top_k = int(body.get("top_k", 1))
+                conf_policy = ConfidencePolicy(
+                    require_skill_match=bool(body.get("require_skill_match", False))
+                )
+
+                completion_id = f"chatcmpl-{uuid.uuid4().hex[:16]}"
+                created = int(time.time())
+                model_name = (
+                    "subcor/base"
+                    if (use_base_only or tenant is None)
+                    else f"subcor/{tenant.tenant_id}"
+                )
+
+                # True token-by-token SSE streaming when backend supports stream_routed_messages
+                # and no structured tool-call post-parsing is required.
+                stream_fn = getattr(mgr.kernel, "stream_routed_messages", None)
+                if stream and not tools and callable(stream_fn):
+                    active_router = None if (use_base_only or tenant is None) else tenant.router
+                    active_registry = None if (use_base_only or tenant is None) else tenant.registry
+                    with mgr.lock:
+                        decision, token_iter = stream_fn(
+                            messages=messages,
+                            tools=None,
+                            router=active_router,
+                            registry=active_registry,
+                            max_tokens=max_tokens,
+                            enable_thinking=enable_thinking,
+                            top_k=top_k,
+                        )
+                        routed_header = ",".join(decision.selected_units) or "base"
+                        self.send_response(HTTPStatus.OK)
+                        self.send_header("Content-Type", "text/event-stream")
+                        self.send_header("Cache-Control", "no-cache")
+                        self.send_header("Connection", "close")
+                        self.send_header("X-SUBCOR-Routed-Units", routed_header)
+                        self.end_headers()
+
+                        first_chunk = {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": model_name,
+                            "choices": [
+                                {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+                            ],
+                        }
+                        self.wfile.write(
+                            f"data: {json.dumps(first_chunk, separators=(',', ':'))}\n\n".encode()
+                        )
+                        self.wfile.flush()
+
+                        last_finish = "stop"
+                        stream_lps: list[float] = []
+                        stream_pieces: list[str] = []
+                        gen_tokens = 0
+                        for ev in token_iter:
+                            stream_lps.append(float(ev.logprob))
+                            gen_tokens = int(ev.generation_tokens)
+                            if ev.text:
+                                stream_pieces.append(ev.text)
+                                chunk = {
+                                    "id": completion_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": created,
+                                    "model": model_name,
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {"content": ev.text},
+                                            "finish_reason": None,
+                                        }
+                                    ],
+                                }
+                                self.wfile.write(
+                                    f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n".encode()
+                                )
+                                self.wfile.flush()
+                            if ev.finish_reason:
+                                last_finish = ev.finish_reason
+
+                        full_text = "".join(stream_pieces).strip()
+                        hit_limit = last_finish == "length" or gen_tokens >= max_tokens
+                        rep_ratio = ngram_repetition_ratio(full_text)
+                        conf = evaluate_turn_confidence(
+                            token_logprobs=stream_lps,
+                            routing=decision,
+                            hit_token_limit=hit_limit,
+                            repetition_ratio=rep_ratio,
+                            policy=conf_policy,
+                        )
+                        if tenant is not None:
+                            user_parts = [
+                                str(m.get("content", ""))
+                                for m in messages
+                                if m.get("role") == "user"
+                            ]
+                            last_user = user_parts[-1] if user_parts else ""
+                            tenant.telemetry.append(
+                                TextTrajectory(
+                                    trajectory_id=f"live-{uuid.uuid4().hex[:12]}",
+                                    task_family="live_chat",
+                                    seat=seat,
+                                    prompt=last_user,
+                                    response=full_text,
+                                    tokens_generated=gen_tokens,
+                                    hit_token_limit=hit_limit,
+                                    repetition_ratio=rep_ratio,
+                                    passed_verifier=False,
+                                    evidence=VerificationEvidence(
+                                        verified=False,
+                                        verifier="pending",
+                                        method="live_inference_unverified",
+                                        notes=(
+                                            f"routed={list(decision.selected_units)} "
+                                            f"escalate={conf.escalate_to_cortex} "
+                                            f"prob={conf.mean_token_prob:.3f}"
+                                        ),
+                                    ),
+                                )
+                            )
+
+                        done_chunk = {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": model_name,
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": last_finish}],
+                            "subcor": {
+                                "tenant": None if tenant is None else tenant.tenant_id,
+                                "selected_units": list(decision.selected_units),
+                                "fell_back_to_base": decision.fell_back_to_base,
+                                "confidence": conf.to_dict(),
+                            },
+                        }
+                        self.wfile.write(
+                            f"data: {json.dumps(done_chunk, separators=(',', ':'))}\n\ndata: [DONE]\n\n".encode()
+                        )
+                        self.wfile.flush()
+                    return
 
                 res = mgr.chat_completion(
                     tenant=tenant,
                     use_base_only=use_base_only,
                     messages=messages,
+                    tools=tools,
                     max_tokens=max_tokens,
                     enable_thinking=enable_thinking,
                     top_k=top_k,
                     seat=seat,
+                    confidence_policy=conf_policy,
                 )
             except (ValueError, IntegrityError) as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": {"message": str(exc)}})
                 return
 
-            completion_id = f"chatcmpl-{uuid.uuid4().hex[:16]}"
-            created = int(time.time())
-            model_name = (
-                "subcor/base" if (use_base_only or tenant is None) else f"subcor/{tenant.tenant_id}"
-            )
             routed_header = ",".join(res.routing.selected_units) or "base"
+            escalate_header = (
+                "true" if (res.confidence and res.confidence.escalate_to_cortex) else "false"
+            )
+            conf_header = (
+                f"{res.confidence.mean_token_prob:.4f}" if res.confidence is not None else "1.0000"
+            )
+            finish_reason = (
+                "tool_calls" if res.tool_calls else ("length" if res.hit_token_limit else "stop")
+            )
 
             if stream:
+                delta_obj: dict[str, Any] = {"role": "assistant"}
+                if res.text:
+                    delta_obj["content"] = res.text
+                if res.tool_calls:
+                    delta_obj["tool_calls"] = [
+                        {"index": idx, **tc} for idx, tc in enumerate(res.tool_calls)
+                    ]
                 chunks = [
                     {
                         "id": completion_id,
                         "object": "chat.completion.chunk",
                         "created": created,
                         "model": model_name,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {"role": "assistant", "content": res.text},
-                                "finish_reason": None,
-                            }
-                        ],
+                        "choices": [{"index": 0, "delta": delta_obj, "finish_reason": None}],
                     },
                     {
                         "id": completion_id,
                         "object": "chat.completion.chunk",
                         "created": created,
                         "model": model_name,
-                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
                     },
                 ]
                 sse_payload = (
@@ -830,10 +1081,19 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
                 self.send_header("X-SUBCOR-Routed-Units", routed_header)
+                self.send_header("X-SUBCOR-Escalate", escalate_header)
+                self.send_header("X-SUBCOR-Confidence", conf_header)
                 self.send_header("Content-Length", str(len(sse_payload)))
                 self.end_headers()
                 self.wfile.write(sse_payload)
                 return
+
+            msg_obj: dict[str, Any] = {
+                "role": "assistant",
+                "content": res.text if (res.text or not res.tool_calls) else None,
+            }
+            if res.tool_calls:
+                msg_obj["tool_calls"] = list(res.tool_calls)
 
             payload = {
                 "id": completion_id,
@@ -843,8 +1103,8 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
                 "choices": [
                     {
                         "index": 0,
-                        "message": {"role": "assistant", "content": res.text},
-                        "finish_reason": "length" if res.hit_token_limit else "stop",
+                        "message": msg_obj,
+                        "finish_reason": finish_reason,
                     }
                 ],
                 "usage": {
@@ -857,12 +1117,17 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
                     "selected_units": list(res.routing.selected_units),
                     "fell_back_to_base": res.routing.fell_back_to_base,
                     "scores": {k: round(v, 5) for k, v in res.routing.scores.items()},
+                    "confidence": None if res.confidence is None else res.confidence.to_dict(),
                 },
             }
             self._send_json(
                 HTTPStatus.OK,
                 payload,
-                extra_headers={"X-SUBCOR-Routed-Units": routed_header},
+                extra_headers={
+                    "X-SUBCOR-Routed-Units": routed_header,
+                    "X-SUBCOR-Escalate": escalate_header,
+                    "X-SUBCOR-Confidence": conf_header,
+                },
             )
             return
 
