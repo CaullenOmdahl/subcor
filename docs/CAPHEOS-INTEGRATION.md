@@ -1,123 +1,86 @@
-# Serving Two CaPheOS Instances on CachyOS (`10.1.100.10`)
+# Serving `ca-phe-digital` & `capheos-sandbox` on CachyOS (`10.1.100.10`)
 
-SLAINGI runs as a **standalone multi-tenant HTTP server** outside the CaPheOS containers. Both CaPheOS instances on `10.1.100.10` share ONE frozen 652 MB `Qwen3.5-0.8B-4bit` base kernel while keeping their Skill Units, trajectories, and MoE routers strictly isolated per company.
+SLAINGI runs on your **Apple M5 (`10.1.100.11`)** as a single multi-tenant HTTP server wrapping one frozen `652 MB` **`Qwen3.5-0.8B-4bit`** kernel, while isolating Skill Units, telemetry, and MoE routers per company:
 
----
+- **`ca-phe-digital`** (CachyOS console `:8900`, station `:8800`) → model `slaingi/ca-phe-digital`
+- **`capheos-sandbox`** (CachyOS console `:8910`, station `:8810`) → model `slaingi/capheos-sandbox`
 
-## Topology
-
-```text
-CachyOS Host (10.1.100.10)                      Apple M5 Host (10.1.100.11)
-┌──────────────────────────────┐               ┌────────────────────────────────────────┐
-│ CaPheOS Instance 1           │               │ SLAINGI Multi-Tenant Server (:8420)    │
-│   provider: openai-compat    │               │   Frozen Base: Qwen3.5-0.8B-4bit       │
-│   baseURL:  http://10.1.100.11:8420/v1  ───► │                                        │
-│   model:    slaingi/company-1│               │   tenants/company-1/  (isolated units) │
-├──────────────────────────────┤               │   tenants/company-2/  (isolated units) │
-│ CaPheOS Instance 2           │               └────────────────────────────────────────┘
-│   provider: openai-compat    │
-│   baseURL:  http://10.1.100.11:8420/v1  ───►
-│   model:    slaingi/company-2│
-└──────────────────────────────┘
-```
+Because CaPheOS's `custom` provider slot is already used for MiniMax, SLAINGI plugs into StarNet's built-in **`ollama` provider (`http://127.0.0.1:11434/v1`, unmetered, zero collision with MiniMax)**. Both `/v1/models` and Ollama's `/api/tags` are served natively.
 
 ---
 
-## 1. Start the SLAINGI Server on `10.1.100.11`
+## Option 1 (Recommended): Encrypted SSH Loopback Tunnel (Zero Open LAN Ports)
 
-Generate a bearer token once (store it in your password manager and in each CaPheOS instance's `secrets/` directory, `chmod 600`):
+Port `11434` is free on `10.1.100.10`. Keeping SLAINGI bound strictly to `127.0.0.1:8420` on `10.1.100.11` and reverse-forwarding `127.0.0.1:11434` onto `10.1.100.10` means:
+- Zero open LAN ports on macOS
+- Zero systemd changes on `10.1.100.10`
+- Zero edits to `.starnet-data/workspaces/.secrets/` (never trips `locked-watch.js`)
 
+### 1. Start SLAINGI on Apple M5 (`10.1.100.11`)
 ```bash
-export SLAINGI_API_KEY="$(openssl rand -hex 24)"
-
 cd /Users/caullen/Documents/Dev/GitHub/slaingi
 uv run --extra mlx slaingi serve \
-  --host 10.1.100.11 \
+  --host 127.0.0.1 \
   --port 8420 \
   --state-dir ~/.local/share/slaingi \
-  --tenant company-1 \
-  --tenant company-2
+  --tenant ca-phe-digital \
+  --tenant capheos-sandbox
 ```
 
-Verify readiness from `10.1.100.10`:
-
+### 2. Forward `127.0.0.1:11434` on `10.1.100.10` → `127.0.0.1:8420` on `10.1.100.11`
 ```bash
-curl -s http://10.1.100.11:8420/readyz | jq
+ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+  -R 127.0.0.1:11434:127.0.0.1:8420 caullen@10.1.100.10
+```
+
+### 3. Verify from `10.1.100.10`
+```bash
+curl -s http://127.0.0.1:11434/readyz | jq
+curl -s http://127.0.0.1:11434/v1/models | jq
 ```
 
 ---
 
-## 2. Connect Both CaPheOS Instances on `10.1.100.10`
+## Option 2: Direct LAN Bind (`10.1.100.11:8420`) + `OLLAMA_BASE_URL`
 
-In each CaPheOS instance's console (**Connections → Add OpenAI-Compatible Provider**):
+If you prefer direct LAN traffic (4.4 ms RTT) instead of an SSH tunnel:
 
-| Setting | CaPheOS Instance 1 | CaPheOS Instance 2 |
-|---|---|---|
-| Base URL | `http://10.1.100.11:8420/v1` | `http://10.1.100.11:8420/v1` |
-| API Key | `secrets/slaingi_api_key` | `secrets/slaingi_api_key` |
-| Model ID | `slaingi/company-1` | `slaingi/company-2` |
-| Seat Assignment | `intern` (low-risk / first-draft seat) | `intern` (low-risk / first-draft seat) |
-
-- Using `slaingi/company-1` vs. `slaingi/company-2` guarantees **strict tenant isolation**: Skill Units promoted in Company 1 are never mounted or visible in Company 2.
-- Use `slaingi/base` to bypass all Skill Units and query the pure frozen base kernel directly.
+1. Start SLAINGI on `10.1.100.11` with `--host 10.1.100.11 --port 8420` (firewall TCP `8420` to `10.1.100.10` only).
+2. Add `Environment=OLLAMA_BASE_URL=http://10.1.100.11:8420/v1` to the `capheos-sandbox-station` and `ca-phe-digital-station` systemd units on `10.1.100.10` and restart them.
 
 ---
 
-## 3. Governed Learning Cycle (API Calls from CaPheOS `tools` & `risk` Seats)
+## Registering the Intern Model in Each Company's `model-policy.json`
 
-### A. Ingest Verified Senior Corrections (`tools` seat)
-```bash
-curl -s -X POST http://10.1.100.11:8420/v1/slaingi/tenants/company-1/trajectories \
-  -H "Authorization: Bearer $SLAINGI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "trajectories": [
-      {
-        "task_family": "ops_triage",
-        "prompt": "Event: Cloud vendor invoice #4821 exceeds spending cap.",
-        "response": "...",
-        "senior_correction": "{\"seat\":\"finance\",\"gate\":\"owner\",\"code\":\"FIN-CAP\"}",
-        "evidence": {"verified": true, "verifier": "senior_seat_ceo", "method": "senior_seat_review"}
-      }
-    ]
-  }'
+In `capheos-sandbox/company/model-policy.json` (and `ca-phe-digital/company/model-policy.json`), under `"allowed"` (approved by CEO/owner per `company/MODEL_POLICY.md`):
+
+```json
+"ollama": {
+  "models": ["slaingi/capheos-sandbox"],
+  "note": "Local SLAINGI 0.8B Intern server (unmetered, MoE-routed Sub-1-Bit Skill Units)"
+}
 ```
+*(Use `"slaingi/ca-phe-digital"` in `ca-phe-digital/company/model-policy.json`.)*
 
-### B. Run Off-Peak Study Cycle (`tools` seat -> lands in `CONFORMANT`, never self-enabled)
-```bash
-curl -s -X POST http://10.1.100.11:8420/v1/slaingi/tenants/company-1/study \
-  -H "Authorization: Bearer $SLAINGI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "unit_id": "ops-triage-v1",
-    "version": "1.0.0",
-    "task_family": "ops_triage",
-    "proposer": "tools",
-    "steps": 108
-  }'
-```
+---
 
-### C. Approve & Hot-Swap Live (`risk` seat — self-approval by `tools` returns HTTP 403)
+## Governed Learning & Benchmarking Loop
+
 ```bash
-curl -s -X POST http://10.1.100.11:8420/v1/slaingi/tenants/company-1/units/ops-triage-v1/promote \
-  -H "Authorization: Bearer $SLAINGI_API_KEY" \
+# Baseline longitudinal benchmark for capheos-sandbox
+uv run slaingi bench run \
+  --endpoint http://127.0.0.1:8420/v1 \
+  --model slaingi/capheos-sandbox \
+  --label "day0-sandbox-base" \
+  --ledger ~/.local/share/slaingi/benchmarks/capheos-sandbox.jsonl
+
+# Promote a CONFORMANT unit after risk sign-off (self-approval by tools returns 403)
+curl -s -X POST http://127.0.0.1:8420/v1/slaingi/tenants/capheos-sandbox/units/<unit-id>/promote \
   -H "Content-Type: application/json" \
   -d '{"approver": "risk"}'
-```
 
-### D. Instant Atomic Rollback (`risk` seat)
-```bash
-curl -s -X POST http://10.1.100.11:8420/v1/slaingi/tenants/company-1/units/ops-triage-v1/rollback \
-  -H "Authorization: Bearer $SLAINGI_API_KEY" \
+# Atomic rollback
+curl -s -X POST http://127.0.0.1:8420/v1/slaingi/tenants/capheos-sandbox/units/<unit-id>/rollback \
   -H "Content-Type: application/json" \
-  -d '{"actor": "risk", "reason": "Regression detected in morning review"}'
+  -d '{"actor": "risk", "reason": "Regression detected"}'
 ```
-
----
-
-## 4. Network & Security Checklist
-
-1. **Always set `SLAINGI_API_KEY`** when binding `--host 10.1.100.11`.
-2. **Restrict macOS firewall / `pf` on `10.1.100.11`** to allow TCP `8420` only from `10.1.100.10` (and localhost).
-3. **Never place company secrets inside prompts** sent to telemetry; SLAINGI's `export-capheos` strips telemetry and exports only `module.json`, `weights.slun`, `router_gate.json`, and `conformance/test.js`.
-4. **Schedule study cycles off-peak**: MLX shares a single Apple Silicon GPU queue, so running `study` (~45–90s) during overnight hours avoids latency spikes on live Intern chat turns.

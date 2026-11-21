@@ -680,6 +680,31 @@ class SlaingiRequestHandler(BaseHTTPRequestHandler):
         if not self._check_auth():
             return
 
+        if path == "/api/tags":
+            # Ollama-compatible model discovery endpoint (used by StarNet's built-in `ollama` provider).
+            now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            models = [
+                {
+                    "name": "slaingi/base",
+                    "model": "slaingi/base",
+                    "modified_at": now_iso,
+                    "size": 0,
+                    "digest": "slaingi-frozen-base",
+                }
+            ]
+            for tid in mgr.list_tenants():
+                models.append(
+                    {
+                        "name": f"slaingi/{tid}",
+                        "model": f"slaingi/{tid}",
+                        "modified_at": now_iso,
+                        "size": 0,
+                        "digest": f"slaingi-tenant-{tid}",
+                    }
+                )
+            self._send_json(HTTPStatus.OK, {"models": models})
+            return
+
         if path == "/v1/models":
             now = int(time.time())
             data = [

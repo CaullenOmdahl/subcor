@@ -152,6 +152,12 @@ def test_multi_tenant_server_isolation_study_governance_streaming_and_rollback(
         model_ids = {m["id"] for m in models["data"]}
         assert {"slaingi/base", "slaingi/company-alpha", "slaingi/company-beta"} <= model_ids
 
+        # Ollama-compatible /api/tags discovery endpoint (for StarNet's built-in `ollama` provider).
+        code, tags, _ = _http_json(f"{base_url}/api/tags")
+        assert code == 200
+        tag_names = {m["name"] for m in tags["models"]}
+        assert {"slaingi/base", "slaingi/company-alpha", "slaingi/company-beta"} <= tag_names
+
         # 2. Ingest verified + unverified trajectories into company-alpha ONLY.
         code, ingest, _ = _http_json(
             f"{base_url}/v1/slaingi/tenants/company-alpha/trajectories",
