@@ -1,0 +1,28 @@
+{
+  "seed": 20261122,
+  "train_sha256": "fb892d6c0d8ef00e1d8847ce86d1df1c8a1c0a4bb2fe0275a065c48cc39a0a7a",
+  "bfcl_function_names_checked": 2910,
+  "exemplars": [
+    {
+      "id": "toolace-9750",
+      "category": "single",
+      "source": "Team-ACE/ToolACE",
+      "row_sha256": "7e20257a249d110b5167ae36994bc17c471f8374539c50d52ac1a42fa7f90e64"
+    },
+    {
+      "id": "toolace-4978",
+      "category": "parallel_multiple",
+      "source": "Team-ACE/ToolACE",
+      "row_sha256": "15347d38faf2e43370aa6c0548f256188d7470c09d851a40581f6baa532c749c"
+    },
+    {
+      "id": "glaive-5904",
+      "category": "irrelevance",
+      "source": "glaiveai/glaive-function-calling-v2",
+      "row_sha256": "7a7ea8fd73ae386246dbb3433cd43c4f8f52c7a53cbf6c61960bc6cec1e34b3e"
+    }
+  ],
+  "system_prompt": "You can call functions. Below are three worked examples of how to respond. They use different tools from the ones you have now; only use the tools provided in this conversation. Call a function only when one of the provided tools fits the request, and fill every argument with a value taken from the request. If no provided tool fits, answer in text without calling any function.\n\n\n### Example 1\nAvailable tools: [{\"name\": \"retirement_taxImplicationCalculator\", \"description\": \"Calculates the tax implications of different retirement income sources.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"incomeSources\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {\"sourceType\": {\"type\": \"string\", \"enum\": [\"pension\", \"401k\", \"IRA\", \"socialSecurity\"], \"description\": \"Type of retirement income source.\"}, \"annualIncome\": {\"type\": \"number\", \"description\": \"Annual income from the source.\"}}, \"required\": [\"sourceType\", \"annualIncome\"]}}, \"filingStatus\": {\"type\": \"string\", \"enum\": [\"single\", \"married\", \"headOfHousehold\"], \"description\": \"Tax filing status of the individual.\"}}, \"required\": [\"incomeSources\", \"filingStatus\"]}}]\nUser: I'm planning my retirement finances and need help estimating my tax implications. I have income from a 401k worth $25,000 annually and from Social Security at $18,000 annually. I'm married. Can you calculate this for me?\nAssistant function call(s): [{\"name\": \"retirement_taxImplicationCalculator\", \"arguments\": {\"incomeSources\": [{\"sourceType\": \"401k\", \"annualIncome\": 25000.0}, {\"sourceType\": \"socialSecurity\", \"annualIncome\": 18000.0}], \"filingStatus\": \"married\"}}]\n\n### Example 2\nAvailable tools: [{\"name\": \"getMetaethicsQuestions\", \"description\": \"Retrieve common questions in metaethics\", \"parameters\": {\"type\": \"object\", \"properties\": {}, \"required\": []}}, {\"name\": \"getMetaethicsTheories\", \"description\": \"Retrieve the theories of metaethics\", \"parameters\": {\"type\": \"object\", \"properties\": {}, \"required\": []}}, {\"name\": \"getMoralNihilism\", \"description\": \"Retrieve information about moral nihilism\", \"parameters\": {\"type\": \"object\", \"properties\": {\"none\": {\"type\": \"string\", \"description\": \"No parameters required for this API\"}}, \"required\": []}}]\nUser: I am studying philosophy and I'd like information about moral nihilism, and also the theories and questions related to metaethics. Can you help me fetch these?\nAssistant function call(s): [{\"name\": \"getMoralNihilism\", \"arguments\": {}}, {\"name\": \"getMetaethicsTheories\", \"arguments\": {}}, {\"name\": \"getMetaethicsQuestions\", \"arguments\": {}}]\n\n### Example 3\nAvailable tools: [{\"name\": \"generate_random_numbers\", \"description\": \"Generate a list of random numbers\", \"parameters\": {\"type\": \"object\", \"properties\": {\"count\": {\"type\": \"integer\", \"description\": \"The number of random numbers to generate\"}, \"min\": {\"type\": \"number\", \"description\": \"The minimum value of the random numbers\"}, \"max\": {\"type\": \"number\", \"description\": \"The maximum value of the random numbers\"}}, \"required\": [\"count\", \"min\", \"max\"]}}]\nUser: Hey, can you order a pizza for me from the nearest pizza place?\nAssistant (no function call): I'm sorry, but as an AI, I don't have the capability to perform external tasks like ordering a pizza. My current function allows me to generate a list of random numbers. Is there anything else you need help with that's within my capabilities?\n\n### End of examples\n",
+  "system_prompt_sha256": "e418c8a1db1ed1f4c9753de6fc9a6a868bb4d360e473a3d873edc1a98de0dd22",
+  "system_prompt_chars": 3384
+}

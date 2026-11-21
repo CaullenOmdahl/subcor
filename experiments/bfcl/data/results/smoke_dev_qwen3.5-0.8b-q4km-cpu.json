@@ -1,0 +1,85 @@
+{
+ "per_category": {
+  "clarify": {
+   "n": 4,
+   "accepted": 4,
+   "got_tool_calls": 0,
+   "args_json_ok": 0,
+   "call_vs_nocall_agree": 4,
+   "names_match": 4
+  },
+  "irrelevance": {
+   "n": 4,
+   "accepted": 4,
+   "got_tool_calls": 0,
+   "args_json_ok": 0,
+   "call_vs_nocall_agree": 4,
+   "names_match": 4
+  },
+  "multi_step": {
+   "n": 4,
+   "accepted": 4,
+   "got_tool_calls": 3,
+   "args_json_ok": 3,
+   "call_vs_nocall_agree": 3,
+   "names_match": 2
+  },
+  "multi_turn": {
+   "n": 4,
+   "accepted": 4,
+   "got_tool_calls": 2,
+   "args_json_ok": 2,
+   "call_vs_nocall_agree": 3,
+   "names_match": 3
+  },
+  "multi_turn_clarify": {
+   "n": 4,
+   "accepted": 4,
+   "got_tool_calls": 1,
+   "args_json_ok": 1,
+   "call_vs_nocall_agree": 3,
+   "names_match": 3
+  },
+  "multiple": {
+   "n": 4,
+   "accepted": 4,
+   "got_tool_calls": 2,
+   "args_json_ok": 1,
+   "call_vs_nocall_agree": 2,
+   "names_match": 2
+  },
+  "parallel": {
+   "n": 4,
+   "accepted": 4,
+   "got_tool_calls": 2,
+   "args_json_ok": 2,
+   "call_vs_nocall_agree": 2,
+   "names_match": 2
+  },
+  "parallel_multiple": {
+   "n": 4,
+   "accepted": 4,
+   "got_tool_calls": 4,
+   "args_json_ok": 4,
+   "call_vs_nocall_agree": 4,
+   "names_match": 4
+  },
+  "single": {
+   "n": 4,
+   "accepted": 4,
+   "got_tool_calls": 3,
+   "args_json_ok": 3,
+   "call_vs_nocall_agree": 3,
+   "names_match": 3
+  }
+ },
+ "total": {
+  "n": 36,
+  "accepted": 36,
+  "got_tool_calls": 17,
+  "args_json_ok": 16,
+  "call_vs_nocall_agree": 28,
+  "names_match": 27
+ },
+ "seconds": 470.2
+}

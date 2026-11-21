@@ -380,6 +380,7 @@ def _run_serve(args: argparse.Namespace) -> int:
                 trainer_projections=projections,
                 trainer_quantize_4bit=args.trainer_quantize_4bit,
                 unload_trainer_after_study=args.unload_trainer_after_study,
+                timeout=args.llamacpp_timeout,
             )
             if args.lora_id_map:
                 raise SystemExit("--lora-id-map applies only to an external server (no --gguf)")
@@ -399,6 +400,7 @@ def _run_serve(args: argparse.Namespace) -> int:
                 model_id=args.model,
                 lora_mode=args.lora_mode,
                 lora_id_map=lora_id_map,
+                timeout=args.llamacpp_timeout,
             )
     else:
         projections = (
@@ -810,6 +812,12 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=8091,
         help="Loopback port for the supervised llama-server (with --gguf).",
+    )
+    serve_cmd.add_argument(
+        "--llamacpp-timeout",
+        type=float,
+        default=60.0,
+        help="Per-request HTTP timeout (seconds) for calls from SUBCOR to llama-server.",
     )
     serve_cmd.add_argument(
         "--n-gpu-layers",

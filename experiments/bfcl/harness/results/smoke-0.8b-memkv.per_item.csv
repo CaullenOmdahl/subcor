@@ -1,0 +1,2 @@
+registry,category,id,correct,error_type,inference_error
+harness/smoke-0.8b-memkv-FC,memory_kv,memory_kv_101-student-21,0,agentic:answer_not_found,0

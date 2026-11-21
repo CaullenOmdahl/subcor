@@ -1,0 +1,7 @@
+registry,category,id,correct,error_type,inference_error
+Qwen/Qwen3.5-0.8B-FC,irrelevance,irrelevance_98,1,,0
+Qwen/Qwen3.5-0.8B-FC,irrelevance,irrelevance_216,1,,0
+Qwen/Qwen3.5-0.8B-FC,parallel,parallel_107,0,parallel_function_checker_no_order:wrong_count,0
+Qwen/Qwen3.5-0.8B-FC,parallel,parallel_194,0,parallel_function_checker_no_order:wrong_count,0
+Qwen/Qwen3.5-0.8B-FC,simple_python,simple_python_20,1,,0
+Qwen/Qwen3.5-0.8B-FC,simple_python,simple_python_132,0,simple_function_checker:wrong_count,0

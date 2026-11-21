@@ -1,0 +1,178 @@
+{
+  "conversations": 21,
+  "conversations_ok": 21,
+  "assistant_turns": 34,
+  "all_ok": true,
+  "server": "http://127.0.0.1:8503",
+  "gguf": "Qwen3.5-0.8B-Q4_K_M.gguf",
+  "results": [
+    {
+      "id": "single_call",
+      "turns": 1,
+      "sequences": 1,
+      "prompt_tokens_max": 305,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "single_call_system",
+      "turns": 1,
+      "sequences": 1,
+      "prompt_tokens_max": 402,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "parallel_calls",
+      "turns": 1,
+      "sequences": 1,
+      "prompt_tokens_max": 304,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "array_bool_float",
+      "turns": 1,
+      "sequences": 1,
+      "prompt_tokens_max": 314,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "nested_object_int",
+      "turns": 1,
+      "sequences": 1,
+      "prompt_tokens_max": 353,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "unicode_args",
+      "turns": 1,
+      "sequences": 1,
+      "prompt_tokens_max": 307,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "content_then_call",
+      "turns": 1,
+      "sequences": 1,
+      "prompt_tokens_max": 271,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "empty_args",
+      "turns": 1,
+      "sequences": 1,
+      "prompt_tokens_max": 346,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "string_with_newlines_quotes",
+      "turns": 1,
+      "sequences": 1,
+      "prompt_tokens_max": 275,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "tool_result_then_answer",
+      "turns": 2,
+      "sequences": 1,
+      "prompt_tokens_max": 359,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "multi_step_chain",
+      "turns": 3,
+      "sequences": 1,
+      "prompt_tokens_max": 491,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "parallel_results",
+      "turns": 2,
+      "sequences": 1,
+      "prompt_tokens_max": 392,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "two_user_queries",
+      "turns": 3,
+      "sequences": 2,
+      "prompt_tokens_max": 367,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "three_user_queries_multi_turn",
+      "turns": 5,
+      "sequences": 3,
+      "prompt_tokens_max": 608,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "irrelevance_no_call",
+      "turns": 1,
+      "sequences": 1,
+      "prompt_tokens_max": 392,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "no_tools_plain_chat",
+      "turns": 2,
+      "sequences": 2,
+      "prompt_tokens_max": 38,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "null_and_numbers",
+      "turns": 1,
+      "sequences": 1,
+      "prompt_tokens_max": 353,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "large_and_negative_numbers",
+      "turns": 1,
+      "sequences": 1,
+      "prompt_tokens_max": 327,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "whitespace_content",
+      "turns": 2,
+      "sequences": 1,
+      "prompt_tokens_max": 297,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "many_tools_schema",
+      "turns": 2,
+      "sequences": 1,
+      "prompt_tokens_max": 717,
+      "ok": true,
+      "failures": []
+    },
+    {
+      "id": "code_in_args",
+      "turns": 1,
+      "sequences": 1,
+      "prompt_tokens_max": 272,
+      "ok": true,
+      "failures": []
+    }
+  ]
+}
