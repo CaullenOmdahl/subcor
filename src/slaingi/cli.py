@@ -185,6 +185,72 @@ def _run_mlx_surgery_cli(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_mlx_moe_cli(args: argparse.Namespace) -> int:
+    try:
+        from slaingi.live_loop import run_live_moe_multi_skill
+    except ImportError as exc:
+        raise SystemExit(
+            "MLX extra is required for 'slaingi mlx-moe'. "
+            "Run with: uv run --extra mlx slaingi mlx-moe"
+        ) from exc
+
+    def execute(work_dir: Path) -> None:
+        report = run_live_moe_multi_skill(
+            work_dir,
+            model_id=args.model,
+            rank=args.rank,
+            sub1bit_rank=args.sub1bit_rank,
+            steps_per_skill=args.steps,
+            lr=args.lr,
+            export_capheos_dir=args.export_capheos,
+            seed=args.seed,
+        )
+        print("=========================================================================")
+        print(f" SLAINGI — Routed MoE Skill Layer Report ({report.model_id})")
+        print("=========================================================================")
+        print(f"Routing Tap Layer  : {report.tap_layer} (invariant frozen shared core)")
+        print(
+            f"Expert 1 (Ops)     : {report.ops_unit.unit_id}@{report.ops_unit.version} "
+            f"state={report.ops_unit.state.value} "
+            f"({report.ops_unit.effective_bits_per_weight:.4f} bpw, "
+            f"{report.ops_unit.payload_bytes / 1024:.1f} KiB)"
+        )
+        print(
+            f"Expert 2 (NOC SLA) : {report.noc_unit.unit_id}@{report.noc_unit.version} "
+            f"state={report.noc_unit.state.value} "
+            f"({report.noc_unit.effective_bits_per_weight:.4f} bpw, "
+            f"{report.noc_unit.payload_bytes / 1024:.1f} KiB)"
+        )
+        print("\nHeld-Out 3-Domain Evaluation (Unseen Prompts):")
+        print(
+            f"  Ops Router       : {report.baseline_ops_acc * 100:5.1f}% -> "
+            f"{report.routed_ops_acc * 100:5.1f}%  "
+            f"(routed to Expert 1: {report.ops_route_acc * 100:5.1f}%)"
+        )
+        print(
+            f"  NOC Incident SLA : {report.baseline_noc_acc * 100:5.1f}% -> "
+            f"{report.routed_noc_acc * 100:5.1f}%  "
+            f"(routed to Expert 2: {report.noc_route_acc * 100:5.1f}%)"
+        )
+        print(
+            f"  General QA       : {report.baseline_general_acc * 100:5.1f}% -> "
+            f"{report.routed_general_acc * 100:5.1f}%  "
+            f"(routed to Base Core: {report.general_base_route_acc * 100:5.1f}%)"
+        )
+        if report.exported_capheos_dirs:
+            print("\nExported CaPheOS Format-2 Bundles (weights + router_gate.json):")
+            for p in report.exported_capheos_dirs:
+                print(f"  - {p}")
+        print("=========================================================================")
+
+    if args.work_dir is None:
+        with tempfile.TemporaryDirectory(prefix="slaingi-mlx-moe-") as tmp:
+            execute(Path(tmp))
+    else:
+        execute(args.work_dir)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="slaingi",
@@ -242,6 +308,19 @@ def main(argv: list[str] | None = None) -> int:
     mlx_surgery_cmd.add_argument("--work-dir", type=Path, default=None)
     mlx_surgery_cmd.add_argument("--max-tokens", type=int, default=160)
 
+    mlx_moe_cmd = sub.add_parser(
+        "mlx-moe",
+        help="Train & route two independent Sub-1-Bit Skill Units over one frozen 0.8B core with 0% general QA regression.",
+    )
+    mlx_moe_cmd.add_argument("--model", type=str, default="mlx-community/Qwen3.5-0.8B-4bit")
+    mlx_moe_cmd.add_argument("--work-dir", type=Path, default=None)
+    mlx_moe_cmd.add_argument("--rank", type=int, default=8)
+    mlx_moe_cmd.add_argument("--sub1bit-rank", type=int, default=8)
+    mlx_moe_cmd.add_argument("--steps", type=int, default=90)
+    mlx_moe_cmd.add_argument("--lr", type=float, default=3e-4)
+    mlx_moe_cmd.add_argument("--seed", type=int, default=42)
+    mlx_moe_cmd.add_argument("--export-capheos", type=Path, default=None)
+
     inspect_cmd = sub.add_parser(
         "inspect",
         help="Inspect registered Skill Units and verify SHA-256 integrity in a unit store.",
@@ -280,6 +359,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "mlx-surgery":
         return _run_mlx_surgery_cli(args)
+
+    if args.command == "mlx-moe":
+        return _run_mlx_moe_cli(args)
 
     if args.command == "inspect":
         registry = SkillUnitRegistry(args.units_dir)

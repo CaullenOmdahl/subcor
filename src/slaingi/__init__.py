@@ -6,6 +6,7 @@ and sub-1-bit binary Skill Units over frozen quantized base kernels.
 
 from slaingi.expansion import ElasticLinear, LowRankAdapter
 from slaingi.proving_ground import MicroInternNet, ProvingGroundReport, run_proving_ground
+from slaingi.router import MoESkillRouter, RouterGate, RoutingDecision
 from slaingi.sub1bit import Sub1BitMatrix, factorize_sub1bit, relative_frobenius_error
 from slaingi.surgeon import LayerDiagnosis, SurgicalPatch, WeightSpaceSurgeon
 from slaingi.telemetry import TrajectoryStore
@@ -37,7 +38,10 @@ __all__ = [
     "LayerDiagnosis",
     "LowRankAdapter",
     "MicroInternNet",
+    "MoESkillRouter",
     "ProvingGroundReport",
+    "RouterGate",
+    "RoutingDecision",
     "SkillUnitManifest",
     "SkillUnitRegistry",
     "SlaingiError",

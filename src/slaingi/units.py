@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 
 from slaingi.expansion import LowRankAdapter
+from slaingi.router import RouterGate
 from slaingi.sub1bit import Sub1BitMatrix
 from slaingi.types import (
     AdaptationMode,
@@ -246,6 +247,24 @@ class SkillUnitRegistry:
 
     def _payload_path(self, unit_id: str) -> Path:
         return self._unit_dir(unit_id) / "payload.slun"
+
+    def _router_gate_path(self, unit_id: str) -> Path:
+        return self._unit_dir(unit_id) / "router_gate.json"
+
+    def save_router_gate(self, gate: RouterGate) -> None:
+        """Attach or update a persistent MoE RouterGate for an existing Skill Unit."""
+        self.get_manifest(gate.unit_id)
+        self._router_gate_path(gate.unit_id).write_text(
+            json.dumps(gate.to_dict(), indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def load_router_gate(self, unit_id: str) -> RouterGate | None:
+        """Load the persistent MoE RouterGate for a Skill Unit, if present."""
+        path = self._router_gate_path(unit_id)
+        if not path.exists():
+            return None
+        return RouterGate.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
     def _write_manifest(self, manifest: SkillUnitManifest) -> None:
         path = self._manifest_path(manifest.unit_id)
@@ -469,6 +488,15 @@ class SkillUnitRegistry:
         payload_dst = out_dir / "weights.slun"
         payload_dst.write_bytes(payload_src.read_bytes())
 
+        gate = self.load_router_gate(unit_id)
+        router_gate_file: str | None = None
+        if gate is not None:
+            router_gate_file = "router_gate.json"
+            (out_dir / router_gate_file).write_text(
+                json.dumps(gate.to_dict(), indent=2) + "\n",
+                encoding="utf-8",
+            )
+
         capheos_manifest: dict[str, Any] = {
             "format": 2,
             "id": f"slaingi-{manifest.unit_id}",
@@ -496,6 +524,7 @@ class SkillUnitRegistry:
                 "encoding": manifest.encoding.value,
                 "targetLayers": list(manifest.target_layers),
                 "payloadFile": "weights.slun",
+                "routerGateFile": router_gate_file,
                 "payloadSha256": manifest.payload_sha256,
                 "payloadBytes": manifest.payload_bytes,
                 "effectiveBitsPerWeight": round(manifest.effective_bits_per_weight, 4),

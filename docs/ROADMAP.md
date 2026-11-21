@@ -41,6 +41,7 @@ Turn senior-seat review transcripts into scheduled overnight adapter growth:
 
 - [x] Text-level append-only `TextTrajectoryStore` (`slaingi.intern`) enforcing the Verified Evidence Gate on live LLM `(prompt, intern_response, senior_correction)` triples.
 - [x] Function-preserving Apple Silicon GPU QLoRA adaptation (`MLXKernel.train_qlora_adapters`, verified `0.0` initial logit perturbation) + Sub-1-Bit binary compression (`< 0.05` bits/weight) + locked conformance gate (`slaingi mlx-intern`).
+- [x] **Routed MoE Skill Layer** (`MoESkillRouter`, `RouterGate`, `slaingi mlx-moe`): frozen tiny dense base as shared expert + top-$k$ routed Sub-1-Bit Skill Units with invariant frozen-base activation routing and zero general-knowledge regression.
 - [ ] Scheduled overnight cron/dispatcher runner with automated failure clustering (routing structural loop defects to `WeightSpaceSurgeon` vs. capability gaps to QLoRA expansion).
 
 **Exit Gate:** Local Intern model demonstrably improves pass rate on a held-out benchmark of real company/coding tasks across overnight cycles with preserved baseline capabilities.

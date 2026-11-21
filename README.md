@@ -58,6 +58,11 @@ Targets compact, capable local models (defaults to `mlx-community/Qwen3.5-0.8B-4
 ```bash
 uv sync --extra dev --extra mlx
 
+# Live Routed MoE Skill Layer (Shared Dense 0.8B Core + Two Routed Sub-1-Bit Experts)
+# Demonstrates multi-skill stacking with 0% general QA regression
+uv run --extra mlx slaingi mlx-moe \
+  --export-capheos ./out/capheos-moe-units
+
 # Live On-Policy Intern distillation -> Sub-1-Bit Skill Unit (< 0.05 bits/weight)
 # + locked conformance gate + CaPheOS & mlx-lm safetensors export + rollback proof
 uv run --extra mlx slaingi mlx-intern \

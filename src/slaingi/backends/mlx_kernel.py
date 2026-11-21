@@ -33,6 +33,7 @@ from mlx_lm.sample_utils import make_sampler
 
 from slaingi.expansion import LowRankAdapter
 from slaingi.intern import ngram_repetition_ratio
+from slaingi.router import MoESkillRouter, RoutingDecision
 from slaingi.units import LayerDeltaPayload, SkillUnitRegistry
 
 DEFAULT_COMPACT_MODEL = "mlx-community/Qwen3.5-0.8B-4bit"
@@ -69,6 +70,7 @@ class SlaingiMLXLinear(nn.Module):
         self._recording: bool = False
         self._act_sum: np.ndarray | None = None
         self._act_count: int = 0
+        self._bypass_adapters: bool = False
 
         # Freeze base layer strictly.
         self.base.freeze()
@@ -173,16 +175,17 @@ class SlaingiMLXLinear(nn.Module):
         y = self.base(x)
         dtype = x.dtype
 
-        if self._mounted:
-            x_f32 = x.astype(mx.float32)
-            for a_t, b_t, scale in self._mounted.values():
-                delta = ((x_f32 @ a_t) @ b_t) * scale
-                y = y + delta.astype(dtype)
+        if not self._bypass_adapters:
+            if self._mounted:
+                x_f32 = x.astype(mx.float32)
+                for a_t, b_t, scale in self._mounted.values():
+                    delta = ((x_f32 @ a_t) @ b_t) * scale
+                    y = y + delta.astype(dtype)
 
-        if self._lora_active and self.lora_a is not None and self.lora_b is not None:
-            x_f32 = x.astype(mx.float32)
-            z = ((x_f32 @ self.lora_a) @ self.lora_b) * self._lora_scale
-            y = y + z.astype(dtype)
+            if self._lora_active and self.lora_a is not None and self.lora_b is not None:
+                x_f32 = x.astype(mx.float32)
+                z = ((x_f32 @ self.lora_a) @ self.lora_b) * self._lora_scale
+                y = y + z.astype(dtype)
 
         if self._recording:
             # Record mean hidden output across batch & sequence positions off-graph.
@@ -238,6 +241,7 @@ class MLXKernel:
             self.instrumented[dotted] = wrapped
 
         self._greedy_sampler = make_sampler(temp=0.0)
+        self._verified_unit_cache: dict[str, tuple[str, list[tuple[str, LowRankAdapter]]]] = {}
 
     def format_chat_prompt(
         self,
@@ -327,9 +331,16 @@ class MLXKernel:
         mx.eval(logits)
         return np.array(logits[0], dtype=np.float64, copy=True)
 
-    def mount_unit(self, unit_id: str, registry: SkillUnitRegistry) -> None:
-        """Verify SHA-256 integrity and hot-swap a Skill Unit onto instrumented layers."""
+    def _load_cached_unit(
+        self, unit_id: str, registry: SkillUnitRegistry
+    ) -> list[tuple[str, LowRankAdapter]]:
+        """Verify SHA-256 on disk and cache unpacked adapters keyed by digest."""
+        manifest = registry.get_manifest(unit_id)
+        cached = self._verified_unit_cache.get(unit_id)
+        if cached is not None and cached[0] == manifest.payload_sha256:
+            return cached[1]
         deltas = registry.load_verified_deltas(unit_id)
+        pairs: list[tuple[str, LowRankAdapter]] = []
         for delta in deltas:
             if delta.layer_name not in self.instrumented:
                 raise KeyError(
@@ -337,7 +348,17 @@ class MLXKernel:
                     f"instrumented in this MLXKernel (have {sorted(self.instrumented)})"
                 )
             adapter = delta.to_adapter(adapter_name=f"unit:{unit_id}:{delta.layer_name}")
-            self.instrumented[delta.layer_name].mount_adapter(adapter.name, adapter)
+            pairs.append((delta.layer_name, adapter))
+        self._verified_unit_cache[unit_id] = (manifest.payload_sha256, pairs)
+        return pairs
+
+    def invalidate_unit_cache(self, unit_id: str) -> None:
+        self._verified_unit_cache.pop(unit_id, None)
+
+    def mount_unit(self, unit_id: str, registry: SkillUnitRegistry) -> None:
+        """Verify SHA-256 integrity and hot-swap a Skill Unit onto instrumented layers."""
+        for layer_name, adapter in self._load_cached_unit(unit_id, registry):
+            self.instrumented[layer_name].mount_adapter(adapter.name, adapter)
 
     def unmount_unit(self, unit_id: str) -> None:
         """Atomically unmount all layer adapters belonging to unit_id."""
@@ -346,6 +367,88 @@ class MLXKernel:
             for name in list(layer.mounted_names):
                 if name.startswith(prefix):
                     layer.unmount_adapter(name)
+
+    def encode_prompt_embedding(
+        self,
+        user_prompt: str,
+        *,
+        tap_layer: str,
+        system_prompt: str | None = None,
+        enable_thinking: bool = False,
+    ) -> np.ndarray:
+        """Compute an invariant frozen-base hidden activation embedding at tap_layer.
+
+        Temporarily bypasses all mounted skill adapters so the routing representation
+        depends strictly on the immutable shared base kernel, preventing router drift
+        as new Skill Units are added or removed.
+        """
+        if tap_layer not in self.instrumented:
+            raise KeyError(f"tap_layer '{tap_layer}' is not instrumented in this MLXKernel")
+        formatted = self.format_chat_prompt(
+            user_prompt,
+            system_prompt=system_prompt,
+            enable_thinking=enable_thinking,
+        )
+        ids = mx.array([self.tokenizer.encode(formatted)], dtype=mx.int32)
+
+        for layer in self.instrumented.values():
+            layer._bypass_adapters = True
+        tap = self.instrumented[tap_layer]
+        tap.start_recording()
+        try:
+            logits = self.model(ids)
+            mx.eval(logits)
+            mean_act = tap.stop_recording()
+        finally:
+            for layer in self.instrumented.values():
+                layer._bypass_adapters = False
+
+        if mean_act is None:
+            raise RuntimeError(f"Failed to capture activation at tap_layer '{tap_layer}'")
+        norm = float(np.linalg.norm(mean_act))
+        return mean_act / norm if norm > 1e-12 else mean_act
+
+    def generate_routed(
+        self,
+        user_prompt: str,
+        *,
+        router: MoESkillRouter,
+        registry: SkillUnitRegistry,
+        system_prompt: str | None = None,
+        max_tokens: int = 128,
+        enable_thinking: bool = False,
+        top_k: int = 1,
+        capture_activations: bool = False,
+    ) -> tuple[GenerationTrace, RoutingDecision]:
+        """Route a prompt through MoESkillRouter using frozen-base activations and generate.
+
+        Routing always inspects `user_prompt` without a task-specific system prompt
+        so expert selection is strictly semantic. Only selected Skill Units are mounted
+        for this turn; 0 selected units runs on the pure frozen shared base kernel.
+        """
+        emb = self.encode_prompt_embedding(
+            user_prompt,
+            tap_layer=router.tap_layer,
+            system_prompt=None,
+            enable_thinking=False,
+        )
+        decision = router.route(emb, top_k=top_k)
+
+        for uid in decision.selected_units:
+            self.mount_unit(uid, registry)
+        try:
+            trace = self.generate_with_trace(
+                user_prompt,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+                enable_thinking=enable_thinking,
+                capture_activations=capture_activations,
+            )
+        finally:
+            for uid in decision.selected_units:
+                self.unmount_unit(uid)
+
+        return trace, decision
 
     def train_qlora_adapters(
         self,

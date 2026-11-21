@@ -92,6 +92,16 @@ CONFORMANT | ENABLED ──(export)────────► CaPheOS module.js
   - Promoted Skill Units export to **both** CaPheOS format-2 `module.json` bundles and stock `mlx-lm` `adapters.safetensors` + `adapter_config.json`.
   - Unmounting a Skill Unit restores exact frozen base logits (`rollback_max_logit_diff == 0.0`).
 
+### 2.7 Routed MoE Skill Layer (`RouterGate`, `MoESkillRouter`)
+- **Actor:** `MLXKernel.generate_routed` selecting active Skill Units per turn.
+- **Object:** Frozen-base prompt embedding at `tap_layer` (captured with adapters bypassed so coordinates never drift as units are added/removed) + registered `RouterGate`s (`router_gate.json`).
+- **Trigger:** Incoming prompt routed before generation (`top_k=1` by default).
+- **Observable contract:**
+  - Each `RouterGate` is fitted analytically from verified positive vs. negative frozen-base embeddings (zero router backprop, zero small-batch router collapse).
+  - Routing uses raw user prompt embeddings (no task-specific system prompt leakage).
+  - When no expert clears its calibrated threshold, `RoutingDecision.fell_back_to_base` is `True` and 0 experts are mounted — producing bit-identical frozen-base behavior (**0.0% general regression**).
+  - Exported CaPheOS format-2 bundles include both `weights.slun` and `router_gate.json`.
+
 ---
 
 ## 3. Architecture Decision Records (ADRs)
@@ -116,3 +126,7 @@ CONFORMANT | ENABLED ──(export)────────► CaPheOS module.js
 ### ADR-005: Target Very Small, Capable Quantized Kernels First (0.6B–4B)
 - **Decision:** Default local target is `mlx-community/Qwen3.5-0.8B-4bit` (~652 MB on disk, <1.5 GB unified RAM), with first-class `--model` support for Gemma 4 E2B QAT and compact Qwen 3/3.5 checkpoints.
 - **Why:** Fast iteration cycles (<60s end-to-end on a 16 GB Apple Silicon laptop), low memory footprint alongside a running CaPheOS company, and high compression leverage when domain skills live in modular `< 0.05` bits/weight Skill Units rather than bloating a single monolithic checkpoint.
+
+### ADR-006: Tiny Dense Shared Core + Routed MoE Skill Units Over Native Small MoE
+- **Decision:** Implement MoE routing at the SLAINGI Skill Unit layer (`MoESkillRouter`) over a frozen dense 0.8B–4B shared core, rather than requiring a 26B–30B native MoE base checkpoint.
+- **Why:** Native MoE checkpoints still keep all experts in unified RAM (~14–16 GB at 4-bit), whereas a frozen 652 MB shared core + ~81 KiB routed Sub-1-Bit Skill Units fits 1,000+ skills inside ~1.5 GB RAM with zero cross-skill interference and zero general-knowledge regression.

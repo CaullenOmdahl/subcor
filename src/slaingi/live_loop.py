@@ -34,6 +34,7 @@ from slaingi.backends.mlx_kernel import (
     export_mlx_lora_safetensors,
 )
 from slaingi.intern import TextTrajectory, TextTrajectoryStore
+from slaingi.router import MoESkillRouter, RouterGate
 from slaingi.surgeon import WeightSpaceSurgeon
 from slaingi.types import (
     AdaptationMode,
@@ -664,4 +665,429 @@ def run_live_weight_surgery(
         baseline_mean_tokens=baseline_mean_tokens,
         patched_mean_tokens=best_mean_tokens,
         unit=unit,
+    )
+
+
+NOC_SYSTEM_PROMPT = (
+    "You are the CaPheOS overnight NOC triage seat. Reply ONLY with compact JSON "
+    'containing keys "sev", "notify", and "sla_min". No prose, no markdown.'
+)
+
+# Training set for Skill Unit 2 (12 NOC alerts: 4 per severity tier).
+_NOC_TRAIN: list[tuple[str, dict[str, object]]] = [
+    (
+        "Alert: Primary checkout API returning HTTP 503 for 100% of customer traffic in us-east.",
+        {"sev": "P1", "notify": "pager", "sla_min": 15},
+    ),
+    (
+        "Alert: Production Postgres primary node crashed and automated failover failed.",
+        {"sev": "P1", "notify": "pager", "sla_min": 15},
+    ),
+    (
+        "Alert: Payment webhook receiver is completely unreachable causing failed orders.",
+        {"sev": "P1", "notify": "pager", "sla_min": 15},
+    ),
+    (
+        "Alert: Global auth login endpoint down; all active users locked out of console.",
+        {"sev": "P1", "notify": "pager", "sla_min": 15},
+    ),
+    (
+        "Alert: Read-replica replication lag climbed to 35 seconds during batch import.",
+        {"sev": "P2", "notify": "slack", "sla_min": 60},
+    ),
+    (
+        "Alert: Background worker queue depth exceeded 5,000 delayed email jobs.",
+        {"sev": "P2", "notify": "slack", "sla_min": 60},
+    ),
+    (
+        "Alert: p95 search latency degraded from 180ms to 1.4s in eu-central.",
+        {"sev": "P2", "notify": "slack", "sla_min": 60},
+    ),
+    (
+        "Alert: Redis cache hit ratio dropped to 42% causing elevated origin CPU load.",
+        {"sev": "P2", "notify": "slack", "sla_min": 60},
+    ),
+    (
+        "Alert: Non-prod analytics archive bucket is at 78% capacity; schedule cleanup.",
+        {"sev": "P3", "notify": "digest", "sla_min": 480},
+    ),
+    (
+        "Alert: Staging TLS certificate expires in 24 days; auto-renewal queued.",
+        {"sev": "P3", "notify": "digest", "sla_min": 480},
+    ),
+    (
+        "Alert: Weekly log rotation completed with 2 minor timestamp format warnings.",
+        {"sev": "P3", "notify": "digest", "sla_min": 480},
+    ),
+    (
+        "Alert: Internal metrics dashboard shows minor label typo on nightly summary panel.",
+        {"sev": "P3", "notify": "digest", "sla_min": 480},
+    ),
+]
+
+# Strictly held-out evaluation set for Skill Unit 2 (6 unseen NOC alerts: 2 per tier).
+_NOC_EVAL: list[tuple[str, dict[str, object]]] = [
+    (
+        "Alert: Core billing service completely offline; all customer transactions failing.",
+        {"sev": "P1", "notify": "pager", "sla_min": 15},
+    ),
+    (
+        "Alert: Production DNS zone resolution failing across North America edge nodes.",
+        {"sev": "P1", "notify": "pager", "sla_min": 15},
+    ),
+    (
+        "Alert: Notification worker queue backed up with 8,000 pending retries.",
+        {"sev": "P2", "notify": "slack", "sla_min": 60},
+    ),
+    (
+        "Alert: API gateway p99 response time spiked to 2.1s after cache flush.",
+        {"sev": "P2", "notify": "slack", "sla_min": 60},
+    ),
+    (
+        "Alert: Dev sandbox disk usage reached 80%; prune old container layers this week.",
+        {"sev": "P3", "notify": "digest", "sla_min": 480},
+    ),
+    (
+        "Alert: Staging SSL certificate renewal window opens in 21 days.",
+        {"sev": "P3", "notify": "digest", "sla_min": 480},
+    ),
+]
+
+
+def _canonical_noc_json(obj: dict[str, object]) -> str:
+    return json.dumps(obj, separators=(",", ":"))
+
+
+def _verify_noc_response(response: str, expected: dict[str, object]) -> bool:
+    text = response.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text).strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    return (
+        parsed.get("sev") == expected["sev"]
+        and parsed.get("notify") == expected["notify"]
+        and parsed.get("sla_min") == expected["sla_min"]
+    )
+
+
+@dataclass(frozen=True)
+class LiveMoEReport:
+    """Results of running Shared Dense Core + Routed MoE Skill Units live on Apple Silicon."""
+
+    model_id: str
+    tap_layer: str
+    target_layers: tuple[str, ...]
+
+    baseline_ops_acc: float
+    baseline_noc_acc: float
+    baseline_general_acc: float
+
+    routed_ops_acc: float
+    routed_noc_acc: float
+    routed_general_acc: float
+
+    ops_route_acc: float
+    noc_route_acc: float
+    general_base_route_acc: float
+
+    ops_unit: SkillUnitManifest
+    noc_unit: SkillUnitManifest
+    exported_capheos_dirs: tuple[Path, ...]
+
+
+def run_live_moe_multi_skill(
+    work_dir: Path,
+    *,
+    model_id: str = DEFAULT_COMPACT_MODEL,
+    rank: int = 8,
+    sub1bit_rank: int = 8,
+    steps_per_skill: int = 90,
+    lr: float = 3e-4,
+    export_capheos_dir: Path | None = None,
+    seed: int = 42,
+) -> LiveMoEReport:
+    """Train & route TWO independent Sub-1-Bit Skill Units over one frozen dense 0.8B core.
+
+    Demonstrates the DeepSeekMoE-style "Tiny Shared Dense Core + Routed Skill Units"
+    pattern:
+      - Skill 1: capheos-ops-router-v1 (company operations governance routing)
+      - Skill 2: capheos-incident-sla-v1 (overnight NOC severity & paging policy)
+      - General QA: falls back to 0 active experts (pure frozen base -> 0% regression).
+    """
+    work_dir.mkdir(parents=True, exist_ok=True)
+    registry = SkillUnitRegistry(work_dir / "units")
+
+    layer_indices = [18, 19, 20, 21, 22, 23]
+    kernel = MLXKernel(model_id=model_id, target_layer_indices=layer_indices)
+    layer_names = sorted(kernel.instrumented.keys())
+    tap_layer = layer_names[0]  # layers.18.mlp.down_proj (invariant frozen-base tap)
+    router = MoESkillRouter(tap_layer=tap_layer)
+
+    # ------------------------------------------------------------------
+    # Phase 0: Baseline evaluation across all 3 held-out domains
+    # ------------------------------------------------------------------
+    def eval_ops_base() -> float:
+        hits = 0
+        for prompt, expected in _OPS_EVAL:
+            tr = kernel.generate_with_trace(
+                prompt, system_prompt=OPS_SYSTEM_PROMPT, max_tokens=48, enable_thinking=False
+            )
+            if _verify_ops_response(tr.response, expected):
+                hits += 1
+        return hits / len(_OPS_EVAL)
+
+    def eval_noc_base() -> float:
+        hits = 0
+        for prompt, expected in _NOC_EVAL:
+            tr = kernel.generate_with_trace(
+                prompt, system_prompt=NOC_SYSTEM_PROMPT, max_tokens=48, enable_thinking=False
+            )
+            if _verify_noc_response(tr.response, expected):
+                hits += 1
+        return hits / len(_NOC_EVAL)
+
+    def eval_general_base() -> float:
+        hits = 0
+        for prompt, expected in _GENERAL_BASELINE_EVAL:
+            tr = kernel.generate_with_trace(prompt, max_tokens=32, enable_thinking=False)
+            if _verify_general_answer(tr.response, expected):
+                hits += 1
+        return hits / len(_GENERAL_BASELINE_EVAL)
+
+    baseline_ops_acc = eval_ops_base()
+    baseline_noc_acc = eval_noc_base()
+    baseline_general_acc = eval_general_base()
+
+    # Precompute invariant frozen-base semantic prompt embeddings (system_prompt=None)
+    # strictly from training/anchor prompts (never touching held-out eval prompts!).
+    ops_train_embs = np.stack(
+        [
+            kernel.encode_prompt_embedding(p, tap_layer=tap_layer, system_prompt=None)
+            for p, _ in _OPS_TRAIN
+        ]
+    )
+    noc_train_embs = np.stack(
+        [
+            kernel.encode_prompt_embedding(p, tap_layer=tap_layer, system_prompt=None)
+            for p, _ in _NOC_TRAIN
+        ]
+    )
+    gen_anchor_embs = np.stack(
+        [
+            kernel.encode_prompt_embedding(p, tap_layer=tap_layer, system_prompt=None)
+            for p, _ in _GENERAL_REPLAY_ANCHORS
+        ]
+    )
+
+    def eval_routed_suite() -> tuple[float, float, float, float, float, float]:
+        ops_hits = ops_routed_ok = 0
+        for prompt, expected in _OPS_EVAL:
+            tr, dec = kernel.generate_routed(
+                prompt,
+                router=router,
+                registry=registry,
+                system_prompt=OPS_SYSTEM_PROMPT,
+                max_tokens=48,
+                top_k=1,
+            )
+            if dec.selected_units == ("capheos-ops-router-v1",):
+                ops_routed_ok += 1
+            if _verify_ops_response(tr.response, expected):
+                ops_hits += 1
+
+        noc_hits = noc_routed_ok = 0
+        for prompt, expected in _NOC_EVAL:
+            tr, dec = kernel.generate_routed(
+                prompt,
+                router=router,
+                registry=registry,
+                system_prompt=NOC_SYSTEM_PROMPT,
+                max_tokens=48,
+                top_k=1,
+            )
+            if dec.selected_units == ("capheos-incident-sla-v1",):
+                noc_routed_ok += 1
+            if _verify_noc_response(tr.response, expected):
+                noc_hits += 1
+
+        gen_hits = gen_routed_base = 0
+        for prompt, expected in _GENERAL_BASELINE_EVAL:
+            tr, dec = kernel.generate_routed(
+                prompt,
+                router=router,
+                registry=registry,
+                system_prompt=None,
+                max_tokens=32,
+                top_k=1,
+            )
+            if dec.fell_back_to_base:
+                gen_routed_base += 1
+            if _verify_general_answer(tr.response, expected):
+                gen_hits += 1
+
+        return (
+            ops_hits / len(_OPS_EVAL),
+            noc_hits / len(_NOC_EVAL),
+            gen_hits / len(_GENERAL_BASELINE_EVAL),
+            ops_routed_ok / len(_OPS_EVAL),
+            noc_routed_ok / len(_NOC_EVAL),
+            gen_routed_base / len(_GENERAL_BASELINE_EVAL),
+        )
+
+    # ------------------------------------------------------------------
+    # Phase 1: Train, Sub-1-Bit Pack, Gate & Promote Skill Unit 1 (Ops Router)
+    # ------------------------------------------------------------------
+    ops_examples: list[tuple[str | None, str, str]] = [
+        (OPS_SYSTEM_PROMPT, p, _canonical_ops_json(exp)) for p, exp in _OPS_TRAIN
+    ]
+    ops_adapters, _, _ = kernel.train_qlora_adapters(
+        ops_examples,
+        layer_names=layer_names,
+        enable_thinking=False,
+        rank=rank,
+        scale=1.0,
+        steps=steps_per_skill,
+        lr=lr,
+        seed=seed,
+    )
+    ops_deltas = [
+        build_layer_delta(
+            name,
+            ops_adapters[name],
+            encoding=DeltaEncoding.SUB1BIT_BINARY,
+            sub1bit_rank=sub1bit_rank,
+        )
+        for name in layer_names
+    ]
+    ops_unit = registry.propose(
+        unit_id="capheos-ops-router-v1",
+        version="1.0.0",
+        title="CaPheOS Operations Router (Routed Sub-1-Bit Expert)",
+        summary="Routed Sub-1-Bit Skill Unit for company operations governance routing.",
+        proposer="tools",
+        mode=AdaptationMode.DYNAMIC_EXPANSION_FP32,
+        deltas=ops_deltas,
+    )
+    ops_gate = RouterGate.fit(
+        unit_id=ops_unit.unit_id,
+        tap_layer=tap_layer,
+        pos_embeddings=ops_train_embs,
+        neg_embeddings=np.vstack([gen_anchor_embs, noc_train_embs]),
+    )
+    registry.save_router_gate(ops_gate)
+
+    # Sandbox register & evaluate Skill 1 through the locked Conformance Gate (zero regression!).
+    router.register(ops_gate)
+    ops_after_1, _, gen_after_1, _, _, _ = eval_routed_suite()
+    ops_unit = registry.record_conformance(
+        ops_unit.unit_id,
+        baseline_before=baseline_general_acc,
+        baseline_after=gen_after_1,
+        target_before=baseline_ops_acc,
+        target_after=ops_after_1,
+        max_regression_tolerance=0.01,
+        min_target_improvement=0.50,
+    )
+    if ops_unit.state is UnitState.CONFORMANT:
+        ops_unit = registry.promote(ops_unit.unit_id, approver="risk")
+    else:
+        router.unregister(ops_unit.unit_id)
+
+    # ------------------------------------------------------------------
+    # Phase 2: Train, Sub-1-Bit Pack, Gate & Promote Skill Unit 2 (NOC SLA)
+    # ------------------------------------------------------------------
+    noc_examples: list[tuple[str | None, str, str]] = [
+        (NOC_SYSTEM_PROMPT, p, _canonical_noc_json(exp)) for p, exp in _NOC_TRAIN
+    ]
+    noc_adapters, _, _ = kernel.train_qlora_adapters(
+        noc_examples,
+        layer_names=layer_names,
+        enable_thinking=False,
+        rank=rank,
+        scale=1.0,
+        steps=steps_per_skill,
+        lr=lr,
+        seed=seed + 100,
+    )
+    noc_deltas = [
+        build_layer_delta(
+            name,
+            noc_adapters[name],
+            encoding=DeltaEncoding.SUB1BIT_BINARY,
+            sub1bit_rank=sub1bit_rank,
+        )
+        for name in layer_names
+    ]
+    noc_unit = registry.propose(
+        unit_id="capheos-incident-sla-v1",
+        version="1.0.0",
+        title="CaPheOS NOC Incident SLA Classifier (Routed Sub-1-Bit Expert)",
+        summary="Routed Sub-1-Bit Skill Unit for overnight NOC severity & paging policy.",
+        proposer="tools",
+        mode=AdaptationMode.DYNAMIC_EXPANSION_FP32,
+        deltas=noc_deltas,
+    )
+    noc_gate = RouterGate.fit(
+        unit_id=noc_unit.unit_id,
+        tap_layer=tap_layer,
+        pos_embeddings=noc_train_embs,
+        neg_embeddings=np.vstack([gen_anchor_embs, ops_train_embs]),
+    )
+    registry.save_router_gate(noc_gate)
+
+    # Register Skill 2 alongside Skill 1 and verify BOTH zero general regression AND zero Skill-1 regression!
+    router.register(noc_gate)
+    (
+        routed_ops_acc,
+        routed_noc_acc,
+        routed_general_acc,
+        ops_route_acc,
+        noc_route_acc,
+        general_base_route_acc,
+    ) = eval_routed_suite()
+
+    # Baseline for Skill 2 is BOTH General QA AND already-promoted Skill 1!
+    combined_baseline_before = 0.5 * (baseline_general_acc + ops_after_1)
+    combined_baseline_after = 0.5 * (routed_general_acc + routed_ops_acc)
+    noc_unit = registry.record_conformance(
+        noc_unit.unit_id,
+        baseline_before=combined_baseline_before,
+        baseline_after=combined_baseline_after,
+        target_before=baseline_noc_acc,
+        target_after=routed_noc_acc,
+        max_regression_tolerance=0.01,
+        min_target_improvement=0.50,
+    )
+    if noc_unit.state is UnitState.CONFORMANT:
+        noc_unit = registry.promote(noc_unit.unit_id, approver="risk")
+    else:
+        router.unregister(noc_unit.unit_id)
+
+    exported_dirs: list[Path] = []
+    if export_capheos_dir is not None:
+        for u in (ops_unit, noc_unit):
+            if u.state in (UnitState.CONFORMANT, UnitState.ENABLED):
+                exported_dirs.append(registry.export_capheos_unit(u.unit_id, export_capheos_dir))
+
+    return LiveMoEReport(
+        model_id=model_id,
+        tap_layer=tap_layer,
+        target_layers=tuple(layer_names),
+        baseline_ops_acc=baseline_ops_acc,
+        baseline_noc_acc=baseline_noc_acc,
+        baseline_general_acc=baseline_general_acc,
+        routed_ops_acc=routed_ops_acc,
+        routed_noc_acc=routed_noc_acc,
+        routed_general_acc=routed_general_acc,
+        ops_route_acc=ops_route_acc,
+        noc_route_acc=noc_route_acc,
+        general_base_route_acc=general_base_route_acc,
+        ops_unit=ops_unit,
+        noc_unit=noc_unit,
+        exported_capheos_dirs=tuple(exported_dirs),
     )

@@ -57,6 +57,13 @@ def test_slaingi_mlx_linear_zero_perturbation_recording_and_rollback() -> None:
     mx.eval(y_mounted)
     assert float(mx.max(mx.abs(y_mounted - y_base)).item()) > 1e-3
 
+    # Bypassing adapters for frozen-base routing tap reproduces exact base output.
+    wrapped._bypass_adapters = True
+    y_bypassed = wrapped(x)
+    mx.eval(y_bypassed)
+    wrapped._bypass_adapters = False
+    assert float(mx.max(mx.abs(y_bypassed - y_base)).item()) == 0.0
+
     wrapped.unmount_adapter("unit:u1")
     y_restored = wrapped(x)
     mx.eval(y_restored)
