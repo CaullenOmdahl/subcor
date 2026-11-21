@@ -276,8 +276,12 @@ def test_multi_tenant_server_isolation_study_governance_streaming_and_rollback(
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        # 1. /readyz works unauthenticated; /v1/models requires bearer token.
-        code, health, _ = _http_json(f"{base_url}/readyz", api_key=None)
+        # 1. /readyz unauthenticated returns minimal status; authenticated returns tenant details.
+        code, unauth_health, _ = _http_json(f"{base_url}/readyz", api_key=None)
+        assert code == 200
+        assert unauth_health == {"status": "ok", "ready": True}
+
+        code, health, _ = _http_json(f"{base_url}/readyz")
         assert code == 200
         assert sorted(health["tenants"].keys()) == ["company-alpha", "company-beta"]
 
@@ -498,11 +502,11 @@ def test_multi_tenant_server_isolation_study_governance_streaming_and_rollback(
             assert final_chunk["subcor"]["confidence"]["escalate_to_cortex"] is False
             assert "data: [DONE]" in sse_text
 
-        # 7. Export CaPheOS format-2 bundle via API (includes portable skill_spec.json).
+        # 7. Export CaPheOS format-2 bundle via API (sandboxed inside export_root).
         code, exp, _ = _http_json(
             f"{base_url}/v1/subcor/tenants/company-alpha/units/ops-skill-v1/export-capheos",
             method="POST",
-            body={"destination": str(tmp_path / "exported")},
+            body={"destination": "exported"},
         )
         assert code == 200
         exp_path = Path(exp["exported_path"])

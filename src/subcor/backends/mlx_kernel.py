@@ -663,6 +663,7 @@ class MLXKernel:
         max_tokens: int = 128,
         enable_thinking: bool = False,
         top_k: int = 1,
+        seat: str | None = None,
         capture_activations: bool = False,
     ) -> tuple[GenerationTrace, RoutingDecision]:
         """Route full multi-turn messages using frozen-base activations of the active user turn."""
@@ -676,7 +677,7 @@ class MLXKernel:
             system_prompt=None,
             enable_thinking=False,
         )
-        decision = router.route(emb, top_k=top_k)
+        decision = router.route(emb, top_k=top_k, seat=seat)
 
         mounted_units: list[str] = []
         try:
@@ -706,6 +707,7 @@ class MLXKernel:
         max_tokens: int = 128,
         enable_thinking: bool = False,
         top_k: int = 1,
+        seat: str | None = None,
     ) -> tuple[RoutingDecision, Iterator[StreamTokenEvent]]:
         """Route once, then return a live token-by-token iterator that cleans up mounts on exit."""
         last_user = next(
@@ -719,7 +721,7 @@ class MLXKernel:
                 system_prompt=None,
                 enable_thinking=False,
             )
-            decision = router.route(emb, top_k=top_k)
+            decision = router.route(emb, top_k=top_k, seat=seat)
         else:
             decision = RoutingDecision(selected_units=(), scores={}, thresholds={})
 

@@ -26,8 +26,9 @@ Apple Silicon MLX without Metal queue races.
 
 from __future__ import annotations
 
-import hmac
+import inspect
 import json
+import queue
 import re
 import threading
 import time
@@ -35,6 +36,7 @@ import uuid
 import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -43,6 +45,7 @@ from urllib.parse import urlparse
 
 import numpy as np
 
+from subcor.auth import AuthPolicy, AuthPrincipal
 from subcor.confidence import (
     ConfidencePolicy,
     TurnConfidence,
@@ -186,6 +189,7 @@ class MLXServingAdapter:
         max_tokens: int,
         enable_thinking: bool,
         top_k: int,
+        seat: str | None = None,
     ) -> InferenceResult:
         if router is not None and registry is not None and router.registered_units:
             trace, decision = self._kernel.generate_routed_messages(
@@ -196,6 +200,7 @@ class MLXServingAdapter:
                 max_tokens=max_tokens,
                 enable_thinking=enable_thinking,
                 top_k=top_k,
+                seat=seat,
             )
         else:
             trace = self._kernel.generate_messages_with_trace(
@@ -227,6 +232,7 @@ class MLXServingAdapter:
         max_tokens: int,
         enable_thinking: bool,
         top_k: int,
+        seat: str | None = None,
     ) -> tuple[RoutingDecision, Iterator[Any]]:
         return self._kernel.stream_routed_messages(
             messages,
@@ -236,6 +242,7 @@ class MLXServingAdapter:
             max_tokens=max_tokens,
             enable_thinking=enable_thinking,
             top_k=top_k,
+            seat=seat,
         )
 
     def generate_routed_chat(
@@ -322,6 +329,34 @@ class TenantContext:
     quarantined_units: list[str] = field(default_factory=list)
 
 
+@dataclass
+class StudyJob:
+    """Observable status of an asynchronous background Study Cycle (Issue #4)."""
+
+    job_id: str
+    tenant_id: str
+    unit_id: str
+    status: str = "queued"  # queued | running | succeeded | failed
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    started_at: str | None = None
+    finished_at: str | None = None
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "job_id": self.job_id,
+            "tenant_id": self.tenant_id,
+            "unit_id": self.unit_id,
+            "status": self.status,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "result": self.result,
+            "error": self.error,
+        }
+
+
 class TenantManager:
     """Coordinates isolated CaPheOS tenants sharing one frozen ServingKernel."""
 
@@ -331,6 +366,7 @@ class TenantManager:
         state_dir: Path,
         kernel: ServingKernel,
         initial_tenants: tuple[str, ...] = (),
+        allow_auto_create_tenants: bool | None = None,
     ) -> None:
         self.state_dir = state_dir
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -338,6 +374,21 @@ class TenantManager:
         self.lock = threading.Lock()
         self.studying_tenant: str | None = None
         self._tenants: dict[str, TenantContext] = {}
+        # By default disallow arbitrary tenant auto-creation when explicit tenants are provisioned.
+        self.allow_auto_create_tenants = (
+            (len(initial_tenants) == 0)
+            if allow_auto_create_tenants is None
+            else allow_auto_create_tenants
+        )
+
+        # Background Study Job queue (Issue #4) so HTTP study requests return immediately.
+        self._study_jobs: dict[str, StudyJob] = {}
+        self._study_jobs_lock = threading.Lock()
+        self._study_queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
+        self._study_worker = threading.Thread(
+            target=self._study_worker_loop, name="subcor-study-worker", daemon=True
+        )
+        self._study_worker.start()
 
         # Discover existing tenants persisted on disk + ensure initial_tenants exist.
         tenants_root = self.state_dir / "tenants"
@@ -348,8 +399,71 @@ class TenantManager:
         for tid in initial_tenants:
             self.ensure_tenant(tid)
 
+    def _study_worker_loop(self) -> None:
+        while True:
+            job_id, kwargs = self._study_queue.get()
+            try:
+                with self._study_jobs_lock:
+                    job = self._study_jobs[job_id]
+                    job.status = "running"
+                    job.started_at = datetime.now(UTC).isoformat()
+                result = self.run_study_cycle(**kwargs)
+                with self._study_jobs_lock:
+                    job = self._study_jobs[job_id]
+                    job.status = "succeeded"
+                    job.result = result
+                    job.finished_at = datetime.now(UTC).isoformat()
+            except Exception as exc:
+                with self._study_jobs_lock:
+                    job = self._study_jobs[job_id]
+                    job.status = "failed"
+                    job.error = str(exc)
+                    job.finished_at = datetime.now(UTC).isoformat()
+            finally:
+                self._study_queue.task_done()
+
+    def submit_study_job(self, tenant_id: str, **kwargs: Any) -> StudyJob:
+        """Enqueue a non-blocking background Study Cycle and return its StudyJob handle."""
+        ctx = self.get_tenant(tenant_id)
+        job_id = f"study-{uuid.uuid4().hex[:12]}"
+        job = StudyJob(
+            job_id=job_id,
+            tenant_id=ctx.tenant_id,
+            unit_id=str(kwargs["unit_id"]),
+        )
+        with self._study_jobs_lock:
+            self._study_jobs[job_id] = job
+        self._study_queue.put((job_id, {"tenant_id": ctx.tenant_id, **kwargs}))
+        return job
+
+    def get_study_job(self, job_id: str) -> StudyJob:
+        with self._study_jobs_lock:
+            job = self._study_jobs.get(job_id)
+            if job is None:
+                raise FileNotFoundError(f"Unknown study job '{job_id}'")
+            return job
+
+    def list_study_jobs(self, tenant_id: str | None = None) -> list[StudyJob]:
+        with self._study_jobs_lock:
+            jobs = list(self._study_jobs.values())
+        if tenant_id is not None:
+            jobs = [j for j in jobs if j.tenant_id == tenant_id]
+        return jobs
+
     def list_tenants(self) -> list[str]:
         return sorted(self._tenants.keys())
+
+    def get_tenant(self, tenant_id: str) -> TenantContext:
+        """Return an existing tenant, or auto-create only if allow_auto_create_tenants=True."""
+        tid = validate_tenant_id(tenant_id)
+        existing = self._tenants.get(tid)
+        if existing is not None:
+            return existing
+        if not self.allow_auto_create_tenants:
+            raise FileNotFoundError(
+                f"Unknown tenant '{tid}' (auto-provisioning is disabled; provision tenant explicitly)"
+            )
+        return self.ensure_tenant(tid)
 
     def ensure_tenant(self, tenant_id: str) -> TenantContext:
         tid = validate_tenant_id(tenant_id)
@@ -415,9 +529,9 @@ class TenantManager:
             return None, True
         if model_field and model_field.startswith("subcor/"):
             tid = model_field.split("/", 1)[1]
-            return self.ensure_tenant(tid), False
+            return self.get_tenant(tid), False
         if header_tenant:
-            return self.ensure_tenant(header_tenant), False
+            return self.get_tenant(header_tenant), False
         if model_field and model_field in self._tenants:
             return self._tenants[model_field], False
         if len(self._tenants) == 1:
@@ -452,15 +566,18 @@ class TenantManager:
         with self.lock:
             multi_fn = getattr(self.kernel, "generate_routed_messages", None)
             if callable(multi_fn):
-                result = multi_fn(
-                    messages=messages,
-                    tools=tools,
-                    router=active_router,
-                    registry=active_registry,
-                    max_tokens=max_tokens,
-                    enable_thinking=enable_thinking,
-                    top_k=top_k,
-                )
+                kwargs: dict[str, Any] = {
+                    "messages": messages,
+                    "tools": tools,
+                    "router": active_router,
+                    "registry": active_registry,
+                    "max_tokens": max_tokens,
+                    "enable_thinking": enable_thinking,
+                    "top_k": top_k,
+                }
+                if "seat" in inspect.signature(multi_fn).parameters:
+                    kwargs["seat"] = seat
+                result = multi_fn(**kwargs)
             else:
                 result = self.kernel.generate_routed_chat(
                     user_prompt=user_prompt,
@@ -574,15 +691,21 @@ class TenantManager:
         lr: float = 3e-4,
         max_regression_tolerance: float = 0.02,
         min_target_improvement: float = 0.25,
+        seat_scope: str | None = None,
+        num_prototypes: int = 1,
         seed: int = 42,
     ) -> dict[str, Any]:
         """Run a governed Study Cycle for one tenant using ONLY verified trajectories.
 
         Trains a zero-perturbation adapter, packs it into a Sub-1-Bit Skill Unit,
-        fits a frozen-base RouterGate, runs the locked Conformance Gate, and stops
-        at CONFORMANT (or DORMANT on fail) so an independent approver must promote.
+        fits a frozen-base RouterGate (optionally seat-scoped and multi-prototype),
+        runs the locked Conformance Gate, and stops at CONFORMANT (or DORMANT on fail)
+        so an independent approver must promote.
+
+        Uses phased kernel locking so live chat requests can interleave between
+        baseline evaluation, training, and conformance phases rather than starving.
         """
-        ctx = self.ensure_tenant(tenant_id)
+        ctx = self.get_tenant(tenant_id)
         pairs = ctx.telemetry.verified_distillation_pairs(task_family=task_family)
 
         # Build genuinely held-out target eval & strictly disjoint baseline/negative sets.
@@ -639,17 +762,19 @@ class TenantManager:
                     hits += 1
             return hits / max(1, len(cases))
 
-        with self.lock:
-            self.studying_tenant = ctx.tenant_id
-            try:
+        self.studying_tenant = ctx.tenant_id
+        try:
+            # Phase 1: Baseline evaluation & frozen-base prompt embeddings.
+            with self.lock:
                 baseline_before = score_cases(base_eval, sys_prompt=None, use_router=True)
                 target_before = score_cases(target_eval, sys_prompt=system_prompt, use_router=True)
-
                 pos_embs = np.stack(
                     [self.kernel.encode_prompt_embedding(p) for p, _ in train_pairs]
                 )
                 neg_embs = np.stack([self.kernel.encode_prompt_embedding(p) for p in neg_prompts])
 
+            # Phase 2: Adapter training (releases lock before/after so chat can interleave).
+            with self.lock:
                 deltas, init_loss, final_loss, zero_diff = self.kernel.train_skill_deltas(
                     examples=examples,
                     rank=rank,
@@ -659,47 +784,51 @@ class TenantManager:
                     seed=seed,
                 )
 
-                manifest = ctx.registry.propose(
+            # Phase 3: Disk packaging & analytical RouterGate fitting (lock-free CPU work!).
+            manifest = ctx.registry.propose(
+                unit_id=unit_id,
+                version=version,
+                title=title,
+                summary=summary,
+                proposer=proposer,
+                mode=AdaptationMode.DYNAMIC_EXPANSION_FP32,
+                deltas=deltas,
+                base_kernel_id=self.kernel.model_id,
+            )
+            gate = RouterGate.fit(
+                unit_id=unit_id,
+                tap_layer=self.kernel.tap_layer,
+                pos_embeddings=pos_embs,
+                neg_embeddings=neg_embs,
+                seat_scope=seat_scope,
+                num_prototypes=num_prototypes,
+            )
+            ctx.registry.save_router_gate(gate)
+            ctx.registry.save_skill_spec(
+                SkillSpec(
                     unit_id=unit_id,
                     version=version,
                     title=title,
                     summary=summary,
+                    task_family=task_family,
                     proposer=proposer,
-                    mode=AdaptationMode.DYNAMIC_EXPANSION_FP32,
-                    deltas=deltas,
-                    base_kernel_id=self.kernel.model_id,
+                    system_prompt=system_prompt,
+                    training_pairs=tuple((p, t) for p, t in train_pairs),
+                    eval_cases=tuple({"prompt": p, "expected": e} for p, e in target_eval),
+                    baseline_cases=tuple({"prompt": p, "expected": e} for p, e in base_eval),
+                    negative_prompts=tuple(neg_prompts),
+                    rank=rank,
+                    sub1bit_rank=sub1bit_rank,
+                    steps=steps,
+                    lr=lr,
+                    max_regression_tolerance=max_regression_tolerance,
+                    min_target_improvement=min_target_improvement,
                 )
-                gate = RouterGate.fit(
-                    unit_id=unit_id,
-                    tap_layer=self.kernel.tap_layer,
-                    pos_embeddings=pos_embs,
-                    neg_embeddings=neg_embs,
-                )
-                ctx.registry.save_router_gate(gate)
-                ctx.registry.save_skill_spec(
-                    SkillSpec(
-                        unit_id=unit_id,
-                        version=version,
-                        title=title,
-                        summary=summary,
-                        task_family=task_family,
-                        proposer=proposer,
-                        system_prompt=system_prompt,
-                        training_pairs=tuple((p, t) for p, t in train_pairs),
-                        eval_cases=tuple({"prompt": p, "expected": e} for p, e in target_eval),
-                        baseline_cases=tuple({"prompt": p, "expected": e} for p, e in base_eval),
-                        negative_prompts=tuple(neg_prompts),
-                        rank=rank,
-                        sub1bit_rank=sub1bit_rank,
-                        steps=steps,
-                        lr=lr,
-                        max_regression_tolerance=max_regression_tolerance,
-                        min_target_improvement=min_target_improvement,
-                    )
-                )
+            )
 
-                # Sandbox-register gate for locked conformance evaluation, then unregister
-                # so the unit NEVER becomes live before independent approver sign-off.
+            # Phase 4: Sandbox-register gate for locked conformance evaluation, then unregister
+            # so the unit NEVER becomes live before independent approver sign-off.
+            with self.lock:
                 ctx.router.register(gate)
                 try:
                     baseline_after = score_cases(base_eval, sys_prompt=None, use_router=True)
@@ -709,17 +838,17 @@ class TenantManager:
                 finally:
                     ctx.router.unregister(unit_id)
 
-                manifest = ctx.registry.record_conformance(
-                    unit_id,
-                    baseline_before=baseline_before,
-                    baseline_after=baseline_after,
-                    target_before=target_before,
-                    target_after=target_after,
-                    max_regression_tolerance=max_regression_tolerance,
-                    min_target_improvement=min_target_improvement,
-                )
-            finally:
-                self.studying_tenant = None
+            manifest = ctx.registry.record_conformance(
+                unit_id,
+                baseline_before=baseline_before,
+                baseline_after=baseline_after,
+                target_before=target_before,
+                target_after=target_after,
+                max_regression_tolerance=max_regression_tolerance,
+                min_target_improvement=min_target_improvement,
+            )
+        finally:
+            self.studying_tenant = None
 
         return {
             "tenant_id": ctx.tenant_id,
@@ -727,6 +856,8 @@ class TenantManager:
             "eval_cases_count": len(target_eval),
             "eval_mode": eval_mode,
             "baseline_neg_overlap": baseline_neg_overlap,
+            "seat_scope": gate.seat_scope,
+            "num_prototypes": len(gate.prototypes) or 1,
             "initial_loss": init_loss,
             "final_loss": final_loss,
             "zero_perturbation_max_diff": zero_diff,
@@ -777,8 +908,24 @@ def _extract_bearer(auth_header: str | None) -> str | None:
     return None
 
 
+def _resolve_sandboxed_export_dir(export_root: Path, requested: str | None) -> Path:
+    """Resolve an export destination strictly inside `export_root`, blocking traversal."""
+    root_resolved = export_root.expanduser().resolve()
+    if not requested or not requested.strip():
+        return root_resolved
+    req_path = Path(requested)
+    candidate = (req_path if req_path.is_absolute() else (root_resolved / req_path)).resolve()
+    try:
+        candidate.relative_to(root_resolved)
+    except ValueError as exc:
+        raise ValueError(
+            f"Export destination '{requested}' escapes configured export_root '{root_resolved}'"
+        ) from exc
+    return candidate
+
+
 class SubcorHTTPServer(ThreadingHTTPServer):
-    """Multi-tenant SUBCOR HTTP server carrying TenantManager and optional API key."""
+    """Multi-tenant SUBCOR HTTP server carrying TenantManager, AuthPolicy, and sandboxed exports."""
 
     allow_reuse_address = True
 
@@ -788,9 +935,22 @@ class SubcorHTTPServer(ThreadingHTTPServer):
         *,
         manager: TenantManager,
         api_key: str | None = None,
+        auth_policy: AuthPolicy | None = None,
+        export_root: Path | None = None,
     ) -> None:
         self.manager = manager
         self.api_key = api_key
+        if auth_policy is not None:
+            self.auth_policy = auth_policy
+        elif api_key:
+            self.auth_policy = AuthPolicy.from_single_key(api_key)
+        else:
+            self.auth_policy = AuthPolicy.disabled()
+        self.export_root = (
+            export_root.expanduser().resolve()
+            if export_root is not None
+            else (manager.state_dir / "exports").resolve()
+        )
         super().__init__(server_address, SubcorRequestHandler)
 
 
@@ -828,15 +988,43 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("JSON request body must be an object")
         return data
 
-    def _check_auth(self) -> bool:
-        expected = self.server.api_key
-        if not expected:
-            return True
+    def _authenticate(self) -> AuthPrincipal | None:
         provided = _extract_bearer(self.headers.get("Authorization"))
-        if not provided or not hmac.compare_digest(provided, expected):
+        principal = self.server.auth_policy.authenticate(provided)
+        if principal is None:
+            # Close connection on 401 so any unconsumed POST body cannot corrupt keep-alive.
+            self.close_connection = True
             self._send_json(
                 HTTPStatus.UNAUTHORIZED,
                 {"error": {"message": "Unauthorized", "type": "auth_error"}},
+                extra_headers={"Connection": "close"},
+            )
+            return None
+        return principal
+
+    def _authorize(
+        self, principal: AuthPrincipal, *, role: str, tenant_id: str | None = None
+    ) -> bool:
+        if not principal.has_role(role):
+            self._send_json(
+                HTTPStatus.FORBIDDEN,
+                {
+                    "error": {
+                        "message": f"Actor '{principal.actor}' lacks required role '{role}'",
+                        "type": "forbidden",
+                    }
+                },
+            )
+            return False
+        if tenant_id is not None and not principal.allows_tenant(tenant_id):
+            self._send_json(
+                HTTPStatus.FORBIDDEN,
+                {
+                    "error": {
+                        "message": f"Actor '{principal.actor}' is not authorized for tenant '{tenant_id}'",
+                        "type": "forbidden",
+                    }
+                },
             )
             return False
         return True
@@ -845,14 +1033,26 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path.rstrip("/") or "/"
         mgr = self.server.manager
 
-        if path in ("/healthz", "/readyz"):
+        if path == "/healthz":
+            self._send_json(HTTPStatus.OK, {"status": "ok"})
+            return
+
+        if path == "/readyz":
+            provided = _extract_bearer(self.headers.get("Authorization"))
+            principal = self.server.auth_policy.authenticate(provided)
+            if self.server.auth_policy.enabled and principal is None:
+                # Minimal unauthenticated readiness probe (no tenant/unit enumeration).
+                self._send_json(HTTPStatus.OK, {"status": "ok", "ready": True})
+                return
+            assert principal is not None
+            visible_tenants = [t for t in mgr.list_tenants() if principal.allows_tenant(t)]
             tenants_summary = {
                 tid: {
                     "enabled_units": list(mgr.ensure_tenant(tid).router.registered_units),
                     "quarantined_units": list(mgr.ensure_tenant(tid).quarantined_units),
                     "total_units": len(mgr.ensure_tenant(tid).registry.list_units()),
                 }
-                for tid in mgr.list_tenants()
+                for tid in visible_tenants
             }
             self._send_json(
                 HTTPStatus.OK,
@@ -866,8 +1066,11 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if not self._check_auth():
+        principal = self._authenticate()
+        if principal is None:
             return
+
+        visible_tenants = [t for t in mgr.list_tenants() if principal.allows_tenant(t)]
 
         if path == "/api/tags":
             # Ollama-compatible model discovery endpoint (used by StarNet's built-in `ollama` provider).
@@ -881,7 +1084,7 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
                     "digest": "subcor-frozen-base",
                 }
             ]
-            for tid in mgr.list_tenants():
+            for tid in visible_tenants:
                 models.append(
                     {
                         "name": f"subcor/{tid}",
@@ -904,7 +1107,7 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
                     "owned_by": "subcor",
                 }
             ]
-            for tid in mgr.list_tenants():
+            for tid in visible_tenants:
                 data.append(
                     {
                         "id": f"subcor/{tid}",
@@ -918,25 +1121,61 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
 
         m_units = re.match(r"^/v1/subcor/tenants/([^/]+)/units$", path)
         if m_units:
+            tid = m_units.group(1)
+            if not self._authorize(principal, role="chat", tenant_id=tid):
+                return
             try:
-                ctx = mgr.ensure_tenant(m_units.group(1))
+                ctx = mgr.get_tenant(tid)
                 units = [m.to_dict() for m in ctx.registry.list_units()]
                 self._send_json(
                     HTTPStatus.OK,
                     {
                         "tenant_id": ctx.tenant_id,
                         "active_routed_units": list(ctx.router.registered_units),
+                        "quarantined_units": list(ctx.quarantined_units),
                         "units": units,
                     },
                 )
+            except FileNotFoundError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
             except ValueError as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+
+        m_jobs = re.match(r"^/v1/subcor/tenants/([^/]+)/study/jobs$", path)
+        if m_jobs:
+            tid = m_jobs.group(1)
+            if not self._authorize(principal, role="propose", tenant_id=tid):
+                return
+            try:
+                ctx = mgr.get_tenant(tid)
+                jobs = [j.to_dict() for j in mgr.list_study_jobs(ctx.tenant_id)]
+                self._send_json(HTTPStatus.OK, {"tenant_id": ctx.tenant_id, "jobs": jobs})
+            except FileNotFoundError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            except ValueError as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+
+        m_job = re.match(r"^/v1/subcor/tenants/([^/]+)/study/jobs/([^/]+)$", path)
+        if m_job:
+            tid, jid = m_job.group(1), m_job.group(2)
+            if not self._authorize(principal, role="propose", tenant_id=tid):
+                return
+            try:
+                job = mgr.get_study_job(jid)
+                if job.tenant_id != tid:
+                    raise FileNotFoundError(f"Unknown study job '{jid}' for tenant '{tid}'")
+                self._send_json(HTTPStatus.OK, job.to_dict())
+            except FileNotFoundError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
             return
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Unknown route: {path}"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if not self._check_auth():
+        principal = self._authenticate()
+        if principal is None:
             return
 
         path = urlparse(self.path).path.rstrip("/")
@@ -958,6 +1197,12 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
                     None if model_field is None else str(model_field),
                     header_tenant,
                 )
+                if not self._authorize(
+                    principal,
+                    role="chat",
+                    tenant_id=None if (use_base_only or tenant is None) else tenant.tenant_id,
+                ):
+                    return
                 messages = body.get("messages")
                 if not isinstance(messages, list):
                     raise ValueError("messages must be a list")
@@ -987,15 +1232,18 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
                     active_router = None if (use_base_only or tenant is None) else tenant.router
                     active_registry = None if (use_base_only or tenant is None) else tenant.registry
                     with mgr.lock:
-                        decision, token_iter = stream_fn(
-                            messages=messages,
-                            tools=None,
-                            router=active_router,
-                            registry=active_registry,
-                            max_tokens=max_tokens,
-                            enable_thinking=enable_thinking,
-                            top_k=top_k,
-                        )
+                        stream_kwargs: dict[str, Any] = {
+                            "messages": messages,
+                            "tools": None,
+                            "router": active_router,
+                            "registry": active_registry,
+                            "max_tokens": max_tokens,
+                            "enable_thinking": enable_thinking,
+                            "top_k": top_k,
+                        }
+                        if "seat" in inspect.signature(stream_fn).parameters:
+                            stream_kwargs["seat"] = seat
+                        decision, token_iter = stream_fn(**stream_kwargs)
                         routed_header = ",".join(decision.selected_units) or "base"
                         self.send_response(HTTPStatus.OK)
                         self.send_header("Content-Type", "text/event-stream")
@@ -1118,8 +1366,14 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
                     seat=seat,
                     confidence_policy=conf_policy,
                 )
-            except (ValueError, IntegrityError) as exc:
+            except FileNotFoundError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": {"message": str(exc)}})
+                return
+            except (ValueError, KeyError, TypeError, IntegrityError) as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": {"message": str(exc)}})
+                return
+            except RuntimeError as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": {"message": str(exc)}})
                 return
 
             routed_header = ",".join(res.routing.selected_units) or "base"
@@ -1215,92 +1469,179 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
-        # 2. Ingest trajectories for a tenant.
+        # 2. Ingest trajectories for a tenant (verified records require `verify` role).
         m_traj = re.match(r"^/v1/subcor/tenants/([^/]+)/trajectories$", path)
         if m_traj:
+            tid = m_traj.group(1)
+            if not self._authorize(principal, role="ingest", tenant_id=tid):
+                return
             try:
                 recs = body.get("trajectories")
                 if not isinstance(recs, list):
                     raise ValueError("trajectories must be a list")
-                summary = mgr.ingest_trajectories(m_traj.group(1), recs)
+                has_verified = any(
+                    bool((item.get("evidence") or {}).get("verified", False))
+                    for item in recs
+                    if isinstance(item, dict)
+                )
+                if has_verified and not principal.has_role("verify"):
+                    self._send_json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": (
+                                f"Actor '{principal.actor}' lacks 'verify' role required to "
+                                "ingest verified trajectories"
+                            )
+                        },
+                    )
+                    return
+                # Bind verifier identity when non-admin caller submits verified evidence.
+                if has_verified and not principal.is_admin:
+                    sanitized: list[dict[str, Any]] = []
+                    for item in recs:
+                        copy_item = dict(item)
+                        ev = dict(copy_item.get("evidence") or {})
+                        if ev.get("verified"):
+                            ev["verifier"] = principal.actor
+                        copy_item["evidence"] = ev
+                        sanitized.append(copy_item)
+                    recs = sanitized
+                summary = mgr.ingest_trajectories(tid, recs)
                 self._send_json(HTTPStatus.OK, summary)
-            except (ValueError, KeyError) as exc:
+            except FileNotFoundError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            except (ValueError, KeyError, TypeError) as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
 
-        # 3. Trigger a governed Study Cycle for a tenant.
+        # 3. Trigger a governed Study Cycle (synchronous or non-blocking async: true).
         m_study = re.match(r"^/v1/subcor/tenants/([^/]+)/study$", path)
         if m_study:
+            tid = m_study.group(1)
+            if not self._authorize(principal, role="propose", tenant_id=tid):
+                return
             try:
-                result = mgr.run_study_cycle(
-                    m_study.group(1),
-                    unit_id=str(body["unit_id"]),
-                    version=str(body.get("version", "1.0.0")),
-                    task_family=str(body["task_family"]),
-                    title=str(body.get("title", body["unit_id"])),
-                    summary=str(body.get("summary", "Study cycle Skill Unit")),
-                    proposer=str(body.get("proposer", "tools")),
-                    system_prompt=body.get("system_prompt"),
-                    eval_cases=body.get("eval_cases"),
-                    baseline_cases=body.get("baseline_cases"),
-                    negative_prompts=body.get("negative_prompts"),
-                    rank=int(body.get("rank", 8)),
-                    sub1bit_rank=int(body.get("sub1bit_rank", 8)),
-                    steps=int(body.get("steps", 108)),
-                    lr=float(body.get("lr", 3e-4)),
-                    max_regression_tolerance=float(body.get("max_regression_tolerance", 0.02)),
-                    min_target_improvement=float(body.get("min_target_improvement", 0.25)),
-                    seed=int(body.get("seed", 42)),
+                # Non-admin principals cannot spoof proposer identity.
+                proposer = (
+                    str(body.get("proposer", principal.actor))
+                    if principal.is_admin
+                    else principal.actor
                 )
-                self._send_json(HTTPStatus.OK, result)
-            except (KeyError, ValueError, VerificationError, GovernanceError) as exc:
+                study_kwargs: dict[str, Any] = {
+                    "unit_id": str(body["unit_id"]),
+                    "version": str(body.get("version", "1.0.0")),
+                    "task_family": str(body["task_family"]),
+                    "title": str(body.get("title", body["unit_id"])),
+                    "summary": str(body.get("summary", "Study cycle Skill Unit")),
+                    "proposer": proposer,
+                    "system_prompt": body.get("system_prompt"),
+                    "eval_cases": body.get("eval_cases"),
+                    "baseline_cases": body.get("baseline_cases"),
+                    "negative_prompts": body.get("negative_prompts"),
+                    "rank": int(body.get("rank", 8)),
+                    "sub1bit_rank": int(body.get("sub1bit_rank", 8)),
+                    "steps": int(body.get("steps", 108)),
+                    "lr": float(body.get("lr", 3e-4)),
+                    "max_regression_tolerance": float(body.get("max_regression_tolerance", 0.02)),
+                    "min_target_improvement": float(body.get("min_target_improvement", 0.25)),
+                    "seat_scope": body.get("seat_scope"),
+                    "num_prototypes": int(body.get("num_prototypes", 1)),
+                    "seed": int(body.get("seed", 42)),
+                }
+                if bool(body.get("async", False)):
+                    job = mgr.submit_study_job(tid, **study_kwargs)
+                    self._send_json(
+                        HTTPStatus.ACCEPTED,
+                        {
+                            **job.to_dict(),
+                            "poll_url": f"/v1/subcor/tenants/{tid}/study/jobs/{job.job_id}",
+                        },
+                    )
+                else:
+                    result = mgr.run_study_cycle(tid, **study_kwargs)
+                    self._send_json(HTTPStatus.OK, result)
+            except FileNotFoundError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            except (
+                KeyError,
+                ValueError,
+                TypeError,
+                IntegrityError,
+                VerificationError,
+                GovernanceError,
+            ) as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
 
-        # 4. Promote a CONFORMANT unit (enforces no self-approval).
+        # 4. Promote a CONFORMANT unit (enforces no self-approval & binds approver to credential).
         m_promote = re.match(r"^/v1/subcor/tenants/([^/]+)/units/([^/]+)/promote$", path)
         if m_promote:
+            tid, uid = m_promote.group(1), m_promote.group(2)
+            if not self._authorize(principal, role="approve", tenant_id=tid):
+                return
             try:
-                manifest = mgr.promote_unit(
-                    m_promote.group(1),
-                    m_promote.group(2),
-                    approver=str(body.get("approver", "")),
+                approver = (
+                    str(body.get("approver", principal.actor))
+                    if principal.is_admin
+                    else principal.actor
                 )
+                manifest = mgr.promote_unit(tid, uid, approver=approver)
                 self._send_json(HTTPStatus.OK, {"manifest": manifest.to_dict()})
             except GovernanceError as exc:
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": str(exc)})
-            except (FileNotFoundError, ValueError, IntegrityError) as exc:
+            except FileNotFoundError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            except (ValueError, TypeError, IntegrityError) as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
 
         # 5. Atomic rollback of an ENABLED unit.
         m_rb = re.match(r"^/v1/subcor/tenants/([^/]+)/units/([^/]+)/rollback$", path)
         if m_rb:
+            tid, uid = m_rb.group(1), m_rb.group(2)
+            if not self._authorize(principal, role="rollback", tenant_id=tid):
+                return
             try:
+                actor = (
+                    str(body.get("actor", principal.actor))
+                    if principal.is_admin
+                    else principal.actor
+                )
                 manifest = mgr.rollback_unit(
-                    m_rb.group(1),
-                    m_rb.group(2),
-                    actor=str(body.get("actor", "risk")),
+                    tid,
+                    uid,
+                    actor=actor,
                     reason=str(body.get("reason", "")),
                 )
                 self._send_json(HTTPStatus.OK, {"manifest": manifest.to_dict()})
             except GovernanceError as exc:
                 self._send_json(HTTPStatus.CONFLICT, {"error": str(exc)})
-            except (FileNotFoundError, ValueError) as exc:
+            except FileNotFoundError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            except (ValueError, TypeError) as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
 
-        # 6. Export a portable CaPheOS format-2 bundle.
+        # 6. Export a portable CaPheOS format-2 bundle (strictly sandboxed inside export_root).
         m_exp = re.match(r"^/v1/subcor/tenants/([^/]+)/units/([^/]+)/export-capheos$", path)
         if m_exp:
+            tid, uid = m_exp.group(1), m_exp.group(2)
+            if not self._authorize(principal, role="export", tenant_id=tid):
+                return
             try:
-                ctx = mgr.ensure_tenant(m_exp.group(1))
-                dest = Path(str(body.get("destination", ctx.root / "exports")))
-                out_dir = ctx.registry.export_capheos_unit(m_exp.group(2), dest)
+                ctx = mgr.get_tenant(tid)
+                req_dest = body.get("destination")
+                dest = _resolve_sandboxed_export_dir(
+                    self.server.export_root / ctx.tenant_id,
+                    None if req_dest is None else str(req_dest),
+                )
+                out_dir = ctx.registry.export_capheos_unit(uid, dest)
                 self._send_json(HTTPStatus.OK, {"exported_path": str(out_dir)})
             except GovernanceError as exc:
                 self._send_json(HTTPStatus.CONFLICT, {"error": str(exc)})
-            except (FileNotFoundError, ValueError, IntegrityError) as exc:
+            except FileNotFoundError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            except (ValueError, TypeError, IntegrityError) as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
 

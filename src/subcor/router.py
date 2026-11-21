@@ -30,9 +30,49 @@ def _l2_normalize(vec: np.ndarray, *, eps: float = 1e-12) -> np.ndarray:
     return np.where(norms > eps, arr / np.maximum(norms, eps), 0.0)
 
 
+def _spherical_kmeans(
+    vectors: np.ndarray,
+    k: int,
+    *,
+    iters: int = 12,
+) -> tuple[np.ndarray, ...]:
+    """Deterministic spherical k-means++ producing k unit-norm prototype centroids."""
+    n = vectors.shape[0]
+    if k <= 1 or n <= 1:
+        return (_l2_normalize(np.mean(vectors, axis=0)),)
+    k = min(k, n)
+
+    # Deterministic farthest-point seeding starting from the vector closest to the global mean.
+    global_mean = _l2_normalize(np.mean(vectors, axis=0))
+    first_idx = int(np.argmax(vectors @ global_mean))
+    centers = [vectors[first_idx].copy()]
+    for _ in range(1, k):
+        sims = np.max(vectors @ np.stack(centers, axis=1), axis=1)
+        next_idx = int(np.argmin(sims))
+        centers.append(vectors[next_idx].copy())
+    c_mat = np.stack(centers, axis=0)  # (k, dim)
+
+    for _ in range(iters):
+        assign = np.argmax(vectors @ c_mat.T, axis=1)
+        new_centers: list[np.ndarray] = []
+        for idx in range(k):
+            members = vectors[assign == idx]
+            if members.shape[0] > 0:
+                new_centers.append(_l2_normalize(np.mean(members, axis=0)))
+            else:
+                new_centers.append(c_mat[idx])
+        c_next = np.stack(new_centers, axis=0)
+        if np.allclose(c_next, c_mat, atol=1e-6):
+            c_mat = c_next
+            break
+        c_mat = c_next
+
+    return tuple(c_mat[i] for i in range(k))
+
+
 @dataclass(frozen=True)
 class RouterGate:
-    """Compact contrastive centroid gate for a single routed Skill Unit."""
+    """Contrastive prototype gate (single or multi-prototype, optionally seat-scoped)."""
 
     unit_id: str
     tap_layer: str
@@ -41,12 +81,17 @@ class RouterGate:
     threshold: float
     pos_mean_score: float
     neg_mean_score: float
+    seat_scope: str | None = None
+    prototypes: tuple[np.ndarray, ...] = ()
 
     def __post_init__(self) -> None:
         if self.pos_centroid.ndim != 1 or self.neg_centroid.ndim != 1:
             raise ValueError("RouterGate centroids must be 1D vectors")
         if self.pos_centroid.shape != self.neg_centroid.shape:
             raise ValueError("pos_centroid and neg_centroid must share the same dimension")
+        for proto in self.prototypes:
+            if proto.shape != self.pos_centroid.shape:
+                raise ValueError("All RouterGate prototypes must match pos_centroid shape")
 
     @property
     def dim(self) -> int:
@@ -57,14 +102,24 @@ class RouterGate:
         return self.pos_mean_score - self.neg_mean_score
 
     def score(self, embedding: np.ndarray) -> float:
-        """Return contrastive cosine margin cos(e, mu+) - cos(e, mu-) in [-2, 2]."""
+        """Return max_j cos(e, p_j) - cos(e, mu-) in [-2, 2]."""
         e = _l2_normalize(embedding)
         if e.shape != self.pos_centroid.shape:
             raise ValueError(
                 f"Embedding dim {e.shape} does not match gate '{self.unit_id}' dim "
                 f"{self.pos_centroid.shape}"
             )
-        return float(np.dot(e, self.pos_centroid) - np.dot(e, self.neg_centroid))
+        if self.prototypes:
+            pos_sim = max(float(np.dot(e, p)) for p in self.prototypes)
+        else:
+            pos_sim = float(np.dot(e, self.pos_centroid))
+        return pos_sim - float(np.dot(e, self.neg_centroid))
+
+    def matches_seat(self, seat: str | None) -> bool:
+        """Return True if this gate is eligible for the requested organizational seat."""
+        if self.seat_scope is None or seat is None:
+            return True
+        return self.seat_scope.strip().lower() == seat.strip().lower()
 
     def matches(self, embedding: np.ndarray) -> bool:
         return self.score(embedding) >= self.threshold
@@ -78,11 +133,15 @@ class RouterGate:
         pos_embeddings: np.ndarray,
         neg_embeddings: np.ndarray,
         safety_bias: float = 0.0,
+        seat_scope: str | None = None,
+        num_prototypes: int = 1,
     ) -> RouterGate:
-        """Fit a contrastive centroid gate analytically from verified embeddings.
+        """Fit a single- or multi-prototype contrastive gate analytically from verified embeddings.
 
         `safety_bias` > 0 raises the threshold toward positives (more conservative,
         reducing false-positive activation on general prompts).
+        `seat_scope` restricts routing eligibility to a specific seat (hierarchical MoE).
+        `num_prototypes` > 1 fits spherical k-means prototypes for multimodal skills.
         """
         pos = _l2_normalize(np.asarray(pos_embeddings, dtype=np.float64))
         neg = _l2_normalize(np.asarray(neg_embeddings, dtype=np.float64))
@@ -93,9 +152,15 @@ class RouterGate:
 
         mu_pos = _l2_normalize(np.mean(pos, axis=0))
         mu_neg = _l2_normalize(np.mean(neg, axis=0))
+        protos = _spherical_kmeans(pos, num_prototypes) if num_prototypes > 1 else ()
 
-        pos_scores = (pos @ mu_pos) - (pos @ mu_neg)
-        neg_scores = (neg @ mu_pos) - (neg @ mu_neg)
+        if protos:
+            p_mat = np.stack(protos, axis=0)  # (k, dim)
+            pos_scores = np.max(pos @ p_mat.T, axis=1) - (pos @ mu_neg)
+            neg_scores = np.max(neg @ p_mat.T, axis=1) - (neg @ mu_neg)
+        else:
+            pos_scores = (pos @ mu_pos) - (pos @ mu_neg)
+            neg_scores = (neg @ mu_pos) - (neg @ mu_neg)
 
         # Calibrate threshold conservatively above observed negatives to prevent
         # false-positive routing on unrelated general/instruction prompts.
@@ -110,6 +175,7 @@ class RouterGate:
         else:
             threshold = max(midpoint, float(np.mean(neg_scores)) + 1e-4)
 
+        norm_scope = seat_scope.strip().lower() if seat_scope and seat_scope.strip() else None
         return cls(
             unit_id=unit_id,
             tap_layer=tap_layer,
@@ -118,10 +184,12 @@ class RouterGate:
             threshold=float(threshold),
             pos_mean_score=float(np.mean(pos_scores)),
             neg_mean_score=float(np.mean(neg_scores)),
+            seat_scope=norm_scope,
+            prototypes=protos,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "unit_id": self.unit_id,
             "tap_layer": self.tap_layer,
             "pos_centroid": [round(float(x), 6) for x in self.pos_centroid],
@@ -129,10 +197,19 @@ class RouterGate:
             "threshold": round(self.threshold, 6),
             "pos_mean_score": round(self.pos_mean_score, 6),
             "neg_mean_score": round(self.neg_mean_score, 6),
+            "seat_scope": self.seat_scope,
         }
+        if self.prototypes:
+            payload["prototypes"] = [
+                [round(float(x), 6) for x in proto] for proto in self.prototypes
+            ]
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RouterGate:
+        raw_protos = data.get("prototypes") or []
+        protos = tuple(_l2_normalize(np.asarray(p, dtype=np.float64)) for p in raw_protos)
+        raw_scope = data.get("seat_scope")
         return cls(
             unit_id=str(data["unit_id"]),
             tap_layer=str(data["tap_layer"]),
@@ -141,6 +218,8 @@ class RouterGate:
             threshold=float(data["threshold"]),
             pos_mean_score=float(data["pos_mean_score"]),
             neg_mean_score=float(data["neg_mean_score"]),
+            seat_scope=None if raw_scope is None else str(raw_scope),
+            prototypes=protos,
         )
 
 
@@ -158,12 +237,12 @@ class RoutingDecision:
 
 
 class MoESkillRouter:
-    """Top-k Skill Unit router over a frozen shared dense core.
+    """Hierarchical seat-scoped + multi-prototype top-k Skill Unit router.
 
-    Selects up to `top_k` registered Skill Units whose contrastive score clears
-    their calibrated threshold (ranked by margin above threshold). If no unit
-    clears its threshold, selects 0 units so inference runs on the pure frozen
-    shared base kernel with exact zero interference.
+    Filters candidate gates by optional `seat` scope first (when provided), then
+    selects up to `top_k` Skill Units whose contrastive score clears their
+    calibrated threshold (ranked by margin above threshold). If no unit clears
+    its threshold, selects 0 units so inference runs on the pure frozen base kernel.
     """
 
     def __init__(self, *, tap_layer: str) -> None:
@@ -188,7 +267,13 @@ class MoESkillRouter:
     def get_gate(self, unit_id: str) -> RouterGate:
         return self._gates[unit_id]
 
-    def route(self, embedding: np.ndarray, *, top_k: int = 1) -> RoutingDecision:
+    def route(
+        self,
+        embedding: np.ndarray,
+        *,
+        top_k: int = 1,
+        seat: str | None = None,
+    ) -> RoutingDecision:
         """Select up to top_k matching Skill Units ranked by margin above threshold."""
         if top_k <= 0:
             raise ValueError("top_k must be >= 1")
@@ -197,6 +282,8 @@ class MoESkillRouter:
         passing: list[tuple[float, str]] = []
 
         for unit_id, gate in self._gates.items():
+            if not gate.matches_seat(seat):
+                continue
             sc = gate.score(embedding)
             scores[unit_id] = sc
             thresholds[unit_id] = gate.threshold
