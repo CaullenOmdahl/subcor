@@ -200,11 +200,27 @@ def _verify_ops_response(response: str, expected: dict[str, str]) -> bool:
 
 
 def _verify_general_answer(response: str, expected_substring: str) -> bool:
-    """Verify concise factual/math answer appears cleanly in response."""
-    clean = response.strip().lower()
-    if expected_substring.isdigit():
-        return bool(re.search(rf"\b{re.escape(expected_substring)}\b", clean))
-    return expected_substring.lower() in clean
+    """Verify concise factual/math answer appears cleanly and affirmatively in response."""
+    from subcor.benchmark import BenchmarkCase, grade_response
+
+    grader = "numeric" if expected_substring.isdigit() else "contains"
+    case = BenchmarkCase("gen", "general_reasoning", "", grader, expected_substring)
+    return grade_response(case, response, hit_token_limit=False)
+
+
+def _eval_general_baseline(kernel: MLXKernel, cases: list[tuple[str, str]]) -> float:
+    """Measure real general-knowledge accuracy over locked baseline questions."""
+    hits = 0
+    for prompt, expected in cases:
+        tr = kernel.generate_with_trace(
+            prompt,
+            max_tokens=32,
+            enable_thinking=False,
+            capture_activations=False,
+        )
+        if _verify_general_answer(tr.response, expected):
+            hits += 1
+    return hits / max(1, len(cases))
 
 
 @dataclass(frozen=True)
@@ -488,11 +504,19 @@ _SURGERY_CONCISE_PROMPTS: list[str] = [
     "What is 12 / 4? Give only the number.",
 ]
 
-_SURGERY_OVERTHINK_PROMPTS: list[str] = [
+_SURGERY_OVERTHINK_SWEEP_PROMPTS: list[str] = [
     "A train travels 120 km in 1.5 hours, then 90 km in 1 hour. What is its average speed in km/h?",
     "How many integers between 1 and 100 are divisible by 3 or 5?",
     "If 5 machines take 5 minutes to make 5 widgets, how long do 100 machines take to make 100 widgets?",
     "A bat and a ball cost $1.10 total. The bat costs $1.00 more than the ball. How much does the ball cost?",
+]
+
+# Held-out word problems never seen during alpha sweep or contrastive profiling.
+_SURGERY_OVERTHINK_EVAL_PROMPTS: list[str] = [
+    "A lily pad doubles in size every day. If it takes 48 days to cover the entire lake, how many days to cover half?",
+    "Three shirts take 3 hours to dry in the sun together. How long do 9 shirts take to dry together?",
+    "A cyclist rides 30 km at 15 km/h and returns 30 km at 30 km/h. What is the average speed for the round trip?",
+    "If you overtake the person in second place in a race, what place are you in?",
 ]
 
 
@@ -503,22 +527,36 @@ def run_live_weight_surgery(
     max_tokens: int = 160,
     alphas: tuple[float, ...] = (0.15, 0.30, 0.50, 0.80),
 ) -> LiveSurgeryReport:
-    """Run zero-gradient contrastive activation diagnosis & ablation on a live MLX model."""
+    """Run zero-gradient contrastive activation diagnosis & ablation on a live MLX model.
+
+    Uses matched `enable_thinking=True` templates across clean vs. overthinking prompts,
+    selects `alpha` on sweep prompts, and certifies the *actual compressed Skill Unit*
+    against held-out overthinking prompts and a real general-QA baseline check.
+    """
     work_dir.mkdir(parents=True, exist_ok=True)
     store = TextTrajectoryStore(work_dir / "telemetry" / "surgery_trajectories.jsonl")
     registry = SkillUnitRegistry(work_dir / "units")
 
     # Instrument layers spanning MIT Experiment 8's targets (15 & 19) plus neighbors.
     kernel = MLXKernel(model_id=model_id, target_layer_indices=[7, 11, 15, 19, 22])
-    layer_names = sorted(kernel.instrumented.keys())
+    layer_names = sorted(
+        kernel.instrumented.keys(),
+        key=lambda n: (
+            int(n.split(".")[1]) if len(n.split(".")) > 1 and n.split(".")[1].isdigit() else 10**9
+        ),
+    )
 
-    # Capture live contrastive activations (concise finishing vs. thinking-limit exhaustion).
+    # Measure real general-QA baseline BEFORE patching.
+    baseline_before = _eval_general_baseline(kernel, _GENERAL_BASELINE_EVAL)
+
+    # Capture live contrastive activations with MATCHED enable_thinking=True so the
+    # extracted direction reflects loop/verbosity dynamics rather than template drift.
     records: list[TextTrajectory] = []
     for idx, prompt in enumerate(_SURGERY_CONCISE_PROMPTS):
         tr = kernel.generate_with_trace(
             prompt,
             max_tokens=max_tokens,
-            enable_thinking=False,
+            enable_thinking=True,
             capture_activations=True,
         )
         records.append(
@@ -529,9 +567,9 @@ def run_live_weight_surgery(
                 prompt=prompt,
                 response=tr.response,
                 tokens_generated=tr.tokens_generated,
-                hit_token_limit=False,
+                hit_token_limit=tr.hit_token_limit,
                 repetition_ratio=tr.repetition_ratio,
-                passed_verifier=True,
+                passed_verifier=(not tr.hit_token_limit),
                 evidence=VerificationEvidence(
                     verified=True,
                     verifier="token_budget_verifier",
@@ -541,15 +579,13 @@ def run_live_weight_surgery(
             )
         )
 
-    overthink_traces = []
-    for idx, prompt in enumerate(_SURGERY_OVERTHINK_PROMPTS):
+    for idx, prompt in enumerate(_SURGERY_OVERTHINK_SWEEP_PROMPTS):
         tr = kernel.generate_with_trace(
             prompt,
             max_tokens=max_tokens,
             enable_thinking=True,
             capture_activations=True,
         )
-        overthink_traces.append(tr)
         records.append(
             TextTrajectory(
                 trajectory_id=f"overthink-{idx:02d}",
@@ -571,10 +607,18 @@ def run_live_weight_surgery(
         )
 
     store.append_many(records)
-    baseline_limit_rate = sum(1 for t in overthink_traces if t.hit_token_limit) / len(
-        overthink_traces
+
+    # Measure unpatched baseline on HELD-OUT eval prompts.
+    heldout_base_traces = [
+        kernel.generate_with_trace(
+            p, max_tokens=max_tokens, enable_thinking=True, capture_activations=False
+        )
+        for p in _SURGERY_OVERTHINK_EVAL_PROMPTS
+    ]
+    baseline_limit_rate = sum(1 for t in heldout_base_traces if t.hit_token_limit) / len(
+        heldout_base_traces
     )
-    baseline_mean_tokens = float(np.mean([t.tokens_generated for t in overthink_traces]))
+    baseline_mean_tokens = float(np.mean([t.tokens_generated for t in heldout_base_traces]))
 
     # Diagnose all layers analytically (zero gradient descent).
     surgeon = WeightSpaceSurgeon()
@@ -591,10 +635,10 @@ def run_live_weight_surgery(
     top_diag = ranked[0]
     w_base = kernel.instrumented[top_diag.layer_name].dequantize_base_weight()
 
-    # Zero-gradient forward-pass sweep over ablation strength alpha.
+    # Zero-gradient sweep over alpha on SWEEP prompts ONLY (disjoint from held-out eval).
     best_alpha = alphas[0]
-    best_mean_tokens = float("inf")
-    best_limit_rate = 1.0
+    best_sweep_tokens = float("inf")
+    best_sweep_limit = 1.0
     best_patch = None
 
     for alpha in alphas:
@@ -613,17 +657,17 @@ def run_live_weight_surgery(
                     enable_thinking=True,
                     capture_activations=False,
                 )
-                for p in _SURGERY_OVERTHINK_PROMPTS
+                for p in _SURGERY_OVERTHINK_SWEEP_PROMPTS
             ]
         finally:
             kernel.instrumented[top_diag.layer_name].unmount_adapter(patch.adapter.name)
 
         mean_tok = float(np.mean([t.tokens_generated for t in traces]))
         lim_rate = sum(1 for t in traces if t.hit_token_limit) / len(traces)
-        if (lim_rate, mean_tok) < (best_limit_rate, best_mean_tokens):
+        if (lim_rate, mean_tok) < (best_sweep_limit, best_sweep_tokens):
             best_alpha = alpha
-            best_limit_rate = lim_rate
-            best_mean_tokens = mean_tok
+            best_sweep_limit = lim_rate
+            best_sweep_tokens = mean_tok
             best_patch = patch
 
     assert best_patch is not None
@@ -644,13 +688,33 @@ def run_live_weight_surgery(
         proposer="tools",
         mode=AdaptationMode.WEIGHT_SPACE_SURGERY,
         deltas=[delta],
+        base_kernel_id=model_id,
     )
+
+    # Certify the ACTUAL COMPRESSED Skill Unit on HELD-OUT eval prompts AND real baseline QA.
+    kernel.mount_unit(unit.unit_id, registry)
+    try:
+        baseline_after = _eval_general_baseline(kernel, _GENERAL_BASELINE_EVAL)
+        heldout_patched_traces = [
+            kernel.generate_with_trace(
+                p, max_tokens=max_tokens, enable_thinking=True, capture_activations=False
+            )
+            for p in _SURGERY_OVERTHINK_EVAL_PROMPTS
+        ]
+    finally:
+        kernel.unmount_unit(unit.unit_id)
+
+    patched_limit_rate = sum(1 for t in heldout_patched_traces if t.hit_token_limit) / len(
+        heldout_patched_traces
+    )
+    patched_mean_tokens = float(np.mean([t.tokens_generated for t in heldout_patched_traces]))
+
     unit = registry.record_conformance(
         unit.unit_id,
-        baseline_before=1.0,
-        baseline_after=1.0,
+        baseline_before=baseline_before,
+        baseline_after=baseline_after,
         target_before=1.0 - baseline_limit_rate,
-        target_after=1.0 - best_limit_rate,
+        target_after=1.0 - patched_limit_rate,
         max_regression_tolerance=0.05,
         min_target_improvement=0.25,
     )
@@ -661,9 +725,9 @@ def run_live_weight_surgery(
         selected_layer=top_diag.layer_name,
         selected_alpha=best_alpha,
         baseline_limit_rate=baseline_limit_rate,
-        patched_limit_rate=best_limit_rate,
+        patched_limit_rate=patched_limit_rate,
         baseline_mean_tokens=baseline_mean_tokens,
-        patched_mean_tokens=best_mean_tokens,
+        patched_mean_tokens=patched_mean_tokens,
         unit=unit,
     )
 

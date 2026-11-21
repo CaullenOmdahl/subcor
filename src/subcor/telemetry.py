@@ -9,6 +9,8 @@ distillation datasets.
 from __future__ import annotations
 
 import json
+import threading
+import warnings
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -23,34 +25,48 @@ class TrajectoryStore:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._io_lock = threading.Lock()
+        self.corrupted_line_count: int = 0
 
     def append(self, record: TrajectoryRecord) -> None:
         """Append one immutable trajectory record to the JSONL log."""
         line = json.dumps(record.to_dict(), separators=(",", ":"), sort_keys=True)
-        with self.path.open("a", encoding="utf-8") as fh:
+        with self._io_lock, self.path.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
 
     def append_many(self, records: Iterable[TrajectoryRecord]) -> int:
         """Append multiple trajectory records and return the count written."""
-        count = 0
-        with self.path.open("a", encoding="utf-8") as fh:
-            for record in records:
-                line = json.dumps(record.to_dict(), separators=(",", ":"), sort_keys=True)
-                fh.write(line + "\n")
-                count += 1
-        return count
+        lines = [
+            json.dumps(record.to_dict(), separators=(",", ":"), sort_keys=True) + "\n"
+            for record in records
+        ]
+        if not lines:
+            return 0
+        with self._io_lock, self.path.open("a", encoding="utf-8") as fh:
+            fh.writelines(lines)
+        return len(lines)
 
     def load_all(self) -> list[TrajectoryRecord]:
-        """Read all stored trajectories in append order."""
+        """Read all valid stored trajectories in append order, skipping corrupted lines."""
         if not self.path.exists():
             return []
         records: list[TrajectoryRecord] = []
-        with self.path.open("r", encoding="utf-8") as fh:
-            for raw in fh:
+        corrupted = 0
+        with self._io_lock, self.path.open("r", encoding="utf-8") as fh:
+            for lineno, raw in enumerate(fh, start=1):
                 raw = raw.strip()
                 if not raw:
                     continue
-                records.append(TrajectoryRecord.from_dict(json.loads(raw)))
+                try:
+                    records.append(TrajectoryRecord.from_dict(json.loads(raw)))
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                    corrupted += 1
+                    warnings.warn(
+                        f"Skipping corrupted trajectory line {lineno} in {self.path}: {exc}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+        self.corrupted_line_count = corrupted
         return records
 
     def load_verified(self, task_family: str | None = None) -> list[TrajectoryRecord]:

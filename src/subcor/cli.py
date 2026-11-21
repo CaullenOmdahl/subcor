@@ -393,7 +393,7 @@ def _run_bench_cli(args: argparse.Namespace) -> int:
             )
         delta = compare_snapshots(snaps[0], snaps[-1])
         print(json.dumps(delta.to_dict(), indent=2))
-        return 0
+        return 0 if delta.ci_passed else 2
 
     return 1
 

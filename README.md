@@ -76,7 +76,7 @@ Measured live on the content-hashed 5-axis **`subcor-core-v1@1.0.0`** benchmark 
 | Skill Unit Size (6 layers, `22.0M` weights) | **81.4 KiB** (**`0.0302 bits/weight`**, vs. `433 KiB` FP16 LoRA) |
 | Zero-Perturbation Expansion & Rollback | **`0.0e+00`** max logit diff |
 | Unseen Ops Routing Growth | **`0.0% → 60%–80%`** (`100.0%` semantic routing accuracy) |
-| Locked Anchor Retention (`general_reasoning`, `instruction_discipline`, `structured_json`) | **`+0.0 pp` regression** (`80.0% → 80.0%` preserved) |
+| Locked Anchor Retention (`general_reasoning`, `instruction_discipline`) | **`+0.0 pp` regression** (`80.0% → 80.0%` preserved; `structured_json` also `+0.0 pp`) |
 | Multi-Unit Routed Turn Latency | **`171 ms` (base) → `137 ms` (2 routed units)** |
 
 ---

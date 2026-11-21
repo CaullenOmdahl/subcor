@@ -32,8 +32,9 @@ import re
 import threading
 import time
 import uuid
+import warnings
 from collections.abc import Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -64,6 +65,33 @@ from subcor.types import (
 from subcor.units import LayerDeltaPayload, SkillUnitRegistry, build_layer_delta
 
 _TENANT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
+_LAYER_IDX_RE = re.compile(r"layers\.(\d+)\.")
+
+# Strictly disjoint default sets so RouterGate negative calibration never overlaps
+# with the locked baseline anchor questions used to score non-regression.
+DEFAULT_BASELINE_ANCHOR_CASES: tuple[tuple[str, str], ...] = (
+    ("What is 12 * 12? Reply with only the number.", "144"),
+    ("What is the capital of Japan? Reply with only the city name.", "Tokyo"),
+    ("What is 15 + 27? Reply with only the number.", "42"),
+    ("What planet is closest to the Sun? Reply with only the planet name.", "Mercury"),
+    ("What is 100 - 37? Reply with only the number.", "63"),
+    ("Name the chemical symbol for gold in at most 4 words.", "Au"),
+)
+
+DEFAULT_NEGATIVE_CALIBRATION_PROMPTS: tuple[str, ...] = (
+    "Explain briefly how photosynthesis converts sunlight into energy.",
+    "Summarize the difference between HTTP GET and POST requests.",
+    "What is the boiling point of water at sea level in Celsius?",
+    "Give a one-sentence definition of recursion in programming.",
+    "List three primary colors used in subtractive color mixing.",
+    "How many minutes are in three and a half hours?",
+)
+
+
+def _layer_sort_key(layer_name: str) -> tuple[int, str]:
+    """Sort layer names by numeric transformer layer index (e.g. layers.7 before layers.11)."""
+    m = _LAYER_IDX_RE.search(layer_name)
+    return (int(m.group(1)) if m else 10**9, layer_name)
 
 
 def validate_tenant_id(tenant_id: str) -> str:
@@ -145,7 +173,7 @@ class MLXServingAdapter:
         )
         self._kernel = MLXKernel(model_id=model_id, target_layer_indices=indices)
         self.model_id = model_id
-        self.target_layers = tuple(sorted(self._kernel.instrumented.keys()))
+        self.target_layers = tuple(sorted(self._kernel.instrumented.keys(), key=_layer_sort_key))
         self.tap_layer = self.target_layers[0]
 
     def generate_routed_messages(
@@ -291,6 +319,7 @@ class TenantContext:
     registry: SkillUnitRegistry
     telemetry: TextTrajectoryStore
     router: MoESkillRouter
+    quarantined_units: list[str] = field(default_factory=list)
 
 
 class TenantManager:
@@ -334,12 +363,31 @@ class TenantManager:
         router = MoESkillRouter(tap_layer=self.kernel.tap_layer)
 
         # Hydrate all ENABLED units with valid SHA-256 digests and saved RouterGates.
+        # Corrupt or tampered units are quarantined rather than bricking the whole server.
+        quarantined: list[str] = []
         for manifest in registry.list_units():
             if manifest.state is UnitState.ENABLED:
-                registry.load_verified_deltas(manifest.unit_id)
-                gate = registry.load_router_gate(manifest.unit_id)
-                if gate is not None and gate.tap_layer == self.kernel.tap_layer:
-                    router.register(gate)
+                try:
+                    registry.load_verified_deltas(manifest.unit_id)
+                    gate = registry.load_router_gate(manifest.unit_id)
+                    if gate is not None and gate.tap_layer == self.kernel.tap_layer:
+                        router.register(gate)
+                    else:
+                        quarantined.append(manifest.unit_id)
+                        warnings.warn(
+                            f"Quarantined ENABLED unit '{manifest.unit_id}' for tenant '{tid}': "
+                            "missing or tap-layer-mismatched RouterGate",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
+                except (IntegrityError, FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+                    quarantined.append(manifest.unit_id)
+                    warnings.warn(
+                        f"Quarantined corrupted ENABLED unit '{manifest.unit_id}' for tenant "
+                        f"'{tid}': {exc}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
 
         ctx = TenantContext(
             tenant_id=tid,
@@ -347,6 +395,7 @@ class TenantManager:
             registry=registry,
             telemetry=telemetry,
             router=router,
+            quarantined_units=quarantined,
         )
         self._tenants[tid] = ctx
         return ctx
@@ -535,23 +584,39 @@ class TenantManager:
         """
         ctx = self.ensure_tenant(tenant_id)
         pairs = ctx.telemetry.verified_distillation_pairs(task_family=task_family)
+
+        # Build genuinely held-out target eval & strictly disjoint baseline/negative sets.
+        if eval_cases:
+            train_pairs = list(pairs)
+            target_eval = [(c["prompt"], c["expected"]) for c in eval_cases]
+            eval_mode = "explicit_held_out"
+        elif len(pairs) >= 4:
+            holdout_n = max(1, len(pairs) // 4)
+            train_pairs = list(pairs[:-holdout_n])
+            target_eval = list(pairs[-holdout_n:])
+            eval_mode = "auto_held_out_split"
+        else:
+            train_pairs = list(pairs)
+            target_eval = list(pairs)
+            eval_mode = "in_sample_small_n"
+
         examples: list[tuple[str | None, str, str]] = [
-            (system_prompt, prompt, target) for prompt, target in pairs
+            (system_prompt, prompt, target) for prompt, target in train_pairs
         ]
 
-        # Build held-out target & baseline eval sets (falling back to verified pairs if omitted).
-        target_eval = (
-            [(c["prompt"], c["expected"]) for c in eval_cases] if eval_cases else list(pairs)
-        )
         base_eval = (
             [(c["prompt"], c["expected"]) for c in baseline_cases]
             if baseline_cases
-            else [
-                ("What is 12 * 12? Reply with only the number.", "144"),
-                ("What is the capital of Japan? Reply with only the city name.", "Tokyo"),
-            ]
+            else list(DEFAULT_BASELINE_ANCHOR_CASES)
         )
-        neg_prompts = list(negative_prompts) if negative_prompts else [p for p, _ in base_eval]
+        neg_prompts = (
+            list(negative_prompts)
+            if negative_prompts
+            else list(DEFAULT_NEGATIVE_CALIBRATION_PROMPTS)
+        )
+        base_prompt_set = {p.strip().lower() for p, _ in base_eval}
+        neg_prompt_set = {p.strip().lower() for p in neg_prompts}
+        baseline_neg_overlap = len(base_prompt_set & neg_prompt_set)
 
         def score_cases(
             cases: list[tuple[str, str]],
@@ -580,7 +645,9 @@ class TenantManager:
                 baseline_before = score_cases(base_eval, sys_prompt=None, use_router=True)
                 target_before = score_cases(target_eval, sys_prompt=system_prompt, use_router=True)
 
-                pos_embs = np.stack([self.kernel.encode_prompt_embedding(p) for p, _ in pairs])
+                pos_embs = np.stack(
+                    [self.kernel.encode_prompt_embedding(p) for p, _ in train_pairs]
+                )
                 neg_embs = np.stack([self.kernel.encode_prompt_embedding(p) for p in neg_prompts])
 
                 deltas, init_loss, final_loss, zero_diff = self.kernel.train_skill_deltas(
@@ -618,7 +685,7 @@ class TenantManager:
                         task_family=task_family,
                         proposer=proposer,
                         system_prompt=system_prompt,
-                        training_pairs=tuple((p, t) for p, t in pairs),
+                        training_pairs=tuple((p, t) for p, t in train_pairs),
                         eval_cases=tuple({"prompt": p, "expected": e} for p, e in target_eval),
                         baseline_cases=tuple({"prompt": p, "expected": e} for p, e in base_eval),
                         negative_prompts=tuple(neg_prompts),
@@ -656,7 +723,10 @@ class TenantManager:
 
         return {
             "tenant_id": ctx.tenant_id,
-            "verified_training_pairs": len(pairs),
+            "verified_training_pairs": len(train_pairs),
+            "eval_cases_count": len(target_eval),
+            "eval_mode": eval_mode,
+            "baseline_neg_overlap": baseline_neg_overlap,
             "initial_loss": init_loss,
             "final_loss": final_loss,
             "zero_perturbation_max_diff": zero_diff,
@@ -667,10 +737,23 @@ class TenantManager:
         """Promote a CONFORMANT unit (enforcing no self-approval) and hot-mount its RouterGate."""
         ctx = self.ensure_tenant(tenant_id)
         with self.lock:
-            manifest = ctx.registry.promote(unit_id, approver=approver)
+            # Validate RouterGate & tap_layer BEFORE persisting ENABLED on disk so
+            # disk and in-memory router state can never diverge.
             gate = ctx.registry.load_router_gate(unit_id)
-            if gate is not None:
-                ctx.router.register(gate)
+            if gate is None:
+                raise GovernanceError(
+                    f"Cannot promote Skill Unit '{unit_id}': missing router_gate.json"
+                )
+            if gate.tap_layer != self.kernel.tap_layer:
+                raise GovernanceError(
+                    f"Cannot promote Skill Unit '{unit_id}': RouterGate tap_layer "
+                    f"'{gate.tap_layer}' does not match active kernel tap_layer "
+                    f"'{self.kernel.tap_layer}'"
+                )
+            manifest = ctx.registry.promote(unit_id, approver=approver)
+            ctx.router.register(gate)
+            if unit_id in ctx.quarantined_units:
+                ctx.quarantined_units.remove(unit_id)
             return manifest
 
     def rollback_unit(
@@ -766,6 +849,7 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
             tenants_summary = {
                 tid: {
                     "enabled_units": list(mgr.ensure_tenant(tid).router.registered_units),
+                    "quarantined_units": list(mgr.ensure_tenant(tid).quarantined_units),
                     "total_units": len(mgr.ensure_tenant(tid).registry.list_units()),
                 }
                 for tid in mgr.list_tenants()
