@@ -102,6 +102,15 @@ CONFORMANT | ENABLED ──(export)────────► CaPheOS module.js
   - When no expert clears its calibrated threshold, `RoutingDecision.fell_back_to_base` is `True` and 0 experts are mounted — producing bit-identical frozen-base behavior (**0.0% general regression**).
   - Exported CaPheOS format-2 bundles include both `weights.slun` and `router_gate.json`.
 
+### 2.8 Standardized Longitudinal Benchmark System (`BenchmarkSuite`, `BenchmarkLedger`)
+- **Actor:** Operator, CI, or automated post-promotion audit duty.
+- **Object:** Immutable versioned `BenchmarkSuite` (with SHA-256 `suite_digest`) + append-only `BenchmarkLedger` (`history.jsonl`) + generated Markdown Growth Report.
+- **Trigger:** `slaingi bench run` against either local MLX state or any live OpenAI-compatible HTTP endpoint (including `slaingi serve` or frontier teacher baselines).
+- **Observable contract:**
+  - Built-in `slaingi-core-v1` evaluates 5 functional axes: locked anchors (`general_reasoning`, `instruction_discipline`), general `structured_json`, and acquired domain skills (`domain_ops_routing`, `domain_noc_triage`).
+  - Records exact active Skill Units, SHA-256 digests, total adapter bytes, `bits/weight`, per-axis pass rates, base-fallback rates, token-limit loop rate, latency, and tok/s.
+  - `compare_snapshots(baseline, current)` checks suite digest equality and flags any regression on locked anchor axes.
+
 ---
 
 ## 3. Architecture Decision Records (ADRs)

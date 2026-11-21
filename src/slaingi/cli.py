@@ -288,6 +288,116 @@ def _run_serve_cli(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_bench_cli(args: argparse.Namespace) -> int:
+    from slaingi.benchmark import (
+        BenchmarkLedger,
+        BenchmarkSuite,
+        compare_snapshots,
+        core_v1_suite,
+        render_markdown_report,
+        run_benchmark_http,
+        run_benchmark_local,
+    )
+
+    if args.bench_cmd == "export-suite":
+        suite = core_v1_suite()
+        suite.to_json_file(args.out)
+        print(
+            f"Exported {suite.suite_id}@{suite.version} "
+            f"(sha256={suite.digest()[:12]}, {len(suite.cases)} cases) -> {args.out}"
+        )
+        return 0
+
+    ledger = BenchmarkLedger(args.ledger.expanduser().resolve())
+
+    if args.bench_cmd == "run":
+        suite = BenchmarkSuite.from_json_file(args.suite) if args.suite else core_v1_suite()
+        if args.endpoint:
+            api_key = args.api_key or os.environ.get("SLAINGI_API_KEY")
+            snap = run_benchmark_http(
+                suite=suite,
+                base_url=args.endpoint,
+                model=args.model,
+                label=args.label,
+                api_key=api_key,
+            )
+        else:
+            from slaingi.server import MLXServingAdapter, TenantManager
+
+            kernel = MLXServingAdapter(model_id=args.model)
+            tenant_ctx = None
+            if args.tenant:
+                mgr = TenantManager(
+                    state_dir=args.state_dir.expanduser().resolve(),
+                    kernel=kernel,
+                )
+                tenant_ctx = mgr.ensure_tenant(args.tenant)
+            snap = run_benchmark_local(
+                suite=suite,
+                kernel=kernel,
+                label=args.label,
+                tenant=tenant_ctx,
+            )
+
+        ledger.append(snap)
+        print("=========================================================================")
+        print(f" SLAINGI Benchmark Snapshot: {snap.label}")
+        print("=========================================================================")
+        print(
+            f"Suite         : {snap.suite_id}@{snap.suite_version} (sha256={snap.suite_digest[:12]})"
+        )
+        print(
+            f"Model         : {snap.model_id}"
+            + (f" (tenant={snap.tenant_id})" if snap.tenant_id else "")
+        )
+        print(
+            f"Active Units  : {len(snap.active_units)} "
+            f"({snap.total_unit_bytes / 1024:.1f} KiB, {snap.mean_bits_per_weight:.4f} avg bpw)"
+        )
+        print(
+            f"Overall       : {snap.overall_pass_rate * 100:5.1f}%  "
+            f"Macro-Axis: {snap.macro_axis_pass_rate * 100:5.1f}%  "
+            f"Anchors: {snap.anchor_pass_rate * 100:5.1f}%"
+        )
+        print(
+            f"Efficiency    : {snap.mean_latency_ms:.0f} ms/case  "
+            f"{snap.tokens_per_second:.1f} tok/s  "
+            f"loop_fail={snap.token_limit_rate * 100:.1f}%"
+        )
+        print("\nPer-Axis Breakdown:")
+        for ax, s in snap.axis_summaries.items():
+            print(
+                f"  {ax:<24} {s.passed:2d}/{s.total:2d} ({s.pass_rate * 100:5.1f}%)  "
+                f"base_fallback={s.base_fallback_rate * 100:5.1f}%"
+            )
+        print(f"\nAppended to ledger: {ledger.path}")
+        print("=========================================================================")
+        return 0
+
+    if args.bench_cmd == "report":
+        snaps = ledger.load_all()
+        md = render_markdown_report(snaps)
+        if args.out is not None:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(md, encoding="utf-8")
+            print(f"Wrote longitudinal growth report ({len(snaps)} snapshots) -> {args.out}")
+        else:
+            print(md)
+        return 0
+
+    if args.bench_cmd == "compare":
+        snaps = ledger.load_all()
+        if len(snaps) < 2:
+            raise SystemExit(
+                f"Need at least 2 snapshots in {ledger.path} to compare (found {len(snaps)})"
+            )
+        delta = compare_snapshots(snaps[0], snaps[-1])
+        print(json.dumps(delta.to_dict(), indent=2))
+        return 0
+
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="slaingi",
@@ -395,6 +505,67 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional bearer API key (or set SLAINGI_API_KEY env var).",
     )
 
+    bench_cmd = sub.add_parser(
+        "bench",
+        help="Run standardized longitudinal benchmarks documenting functional growth over time.",
+    )
+    bench_sub = bench_cmd.add_subparsers(dest="bench_cmd", required=True)
+
+    b_run = bench_sub.add_parser(
+        "run",
+        help="Execute a versioned benchmark suite and append an immutable snapshot to the ledger.",
+    )
+    b_run.add_argument(
+        "--label", type=str, required=True, help="Snapshot label (e.g. day0-base, v1-ops)."
+    )
+    b_run.add_argument(
+        "--ledger",
+        type=Path,
+        default=Path.home() / ".local" / "share" / "slaingi" / "benchmarks" / "history.jsonl",
+    )
+    b_run.add_argument("--suite", type=Path, default=None, help="Optional custom JSON suite file.")
+    b_run.add_argument(
+        "--endpoint",
+        type=str,
+        default=None,
+        help="OpenAI-compatible base URL (e.g. http://10.1.100.11:8420/v1). If omitted, runs local MLX.",
+    )
+    b_run.add_argument("--api-key", type=str, default=None)
+    b_run.add_argument("--model", type=str, default="mlx-community/Qwen3.5-0.8B-4bit")
+    b_run.add_argument(
+        "--state-dir", type=Path, default=Path.home() / ".local" / "share" / "slaingi"
+    )
+    b_run.add_argument(
+        "--tenant", type=str, default=None, help="Tenant ID when benchmarking local MLX state."
+    )
+
+    b_rep = bench_sub.add_parser(
+        "report",
+        help="Render a longitudinal Markdown Functional Growth Report from a benchmark ledger.",
+    )
+    b_rep.add_argument(
+        "--ledger",
+        type=Path,
+        default=Path.home() / ".local" / "share" / "slaingi" / "benchmarks" / "history.jsonl",
+    )
+    b_rep.add_argument("--out", type=Path, default=None, help="Write Markdown report to file.")
+
+    b_cmp = bench_sub.add_parser(
+        "compare",
+        help="Compare Day-0 baseline snapshot against latest snapshot in a benchmark ledger.",
+    )
+    b_cmp.add_argument(
+        "--ledger",
+        type=Path,
+        default=Path.home() / ".local" / "share" / "slaingi" / "benchmarks" / "history.jsonl",
+    )
+
+    b_exp = bench_sub.add_parser(
+        "export-suite",
+        help="Export the canonical built-in slaingi-core-v1 benchmark suite to JSON.",
+    )
+    b_exp.add_argument("--out", type=Path, required=True)
+
     inspect_cmd = sub.add_parser(
         "inspect",
         help="Inspect registered Skill Units and verify SHA-256 integrity in a unit store.",
@@ -439,6 +610,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "serve":
         return _run_serve_cli(args)
+
+    if args.command == "bench":
+        return _run_bench_cli(args)
 
     if args.command == "inspect":
         registry = SkillUnitRegistry(args.units_dir)

@@ -58,6 +58,14 @@ Targets compact, capable local models (defaults to `mlx-community/Qwen3.5-0.8B-4
 ```bash
 uv sync --extra dev --extra mlx
 
+# Standardized Longitudinal Growth Benchmark (works against local MLX or live `slaingi serve`)
+uv run --extra mlx slaingi bench run --label day0-base --ledger ./benchmarks/history.jsonl
+uv run --extra mlx slaingi bench run \
+  --endpoint http://10.1.100.11:8420/v1 --model slaingi/company-1 \
+  --label v1-after-ops --ledger ./benchmarks/history.jsonl
+uv run slaingi bench report --ledger ./benchmarks/history.jsonl --out ./benchmarks/GROWTH_REPORT.md
+uv run slaingi bench compare --ledger ./benchmarks/history.jsonl
+
 # Live Multi-Tenant OpenAI-Compatible & Governed Server (for 1..N CaPheOS instances)
 SLAINGI_API_KEY="replace-with-strong-key" uv run --extra mlx slaingi serve \
   --host 127.0.0.1 --port 8420 \
