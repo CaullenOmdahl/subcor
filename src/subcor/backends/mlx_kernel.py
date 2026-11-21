@@ -810,6 +810,7 @@ class MLXKernel:
         steps: int = 108,
         lr: float = 3e-4,
         max_seq_len: int = 1536,
+        grad_accum: int = 1,
         seed: int = 42,
     ) -> tuple[dict[str, LowRankAdapter], list[float], float]:
         """Function-preserving LoRA expansion + Apple Silicon GPU QLoRA adaptation.
@@ -987,6 +988,34 @@ class MLXKernel:
             self.model.train()
         else:
             self.model.eval()
+        accum = max(1, int(grad_accum))
+
+        def _add_grads(acc: Any, g: Any) -> Any:
+            if acc is None:
+                return g
+            if isinstance(acc, dict):
+                return {k: _add_grads(acc[k], g[k]) for k in acc}
+            if isinstance(acc, list):
+                return [_add_grads(a, b) for a, b in zip(acc, g, strict=True)]
+            return acc + g
+
+        def _scale_grads(g: Any, inv: float) -> Any:
+            if isinstance(g, dict):
+                return {k: _scale_grads(v, inv) for k, v in g.items()}
+            if isinstance(g, list):
+                return [_scale_grads(v, inv) for v in g]
+            return g * inv
+
+        ex_cursor = 0
+
+        def _next_example() -> tuple[mx.array, mx.array, int]:
+            nonlocal ex_cursor
+            if ex_cursor % len(cached_examples) == 0:
+                rng.shuffle(order)
+            idx = int(order[ex_cursor % len(cached_examples)])
+            ex_cursor += 1
+            return cached_examples[idx]
+
         try:
             # Stage 1: FP32 continuous warm-start.
             opt_fp32 = optim.AdamW(
@@ -994,16 +1023,19 @@ class MLXKernel:
                 weight_decay=0.01,
             )
             for step in range(fp32_steps):
-                if step % len(cached_examples) == 0:
-                    rng.shuffle(order)
-                ex_idx = int(order[step % len(cached_examples)])
-                inp, y_target, target_start = cached_examples[ex_idx]
-
-                loss_val, grads = loss_and_grad(self.model, inp, y_target, target_start)
-                grads, _ = optim.clip_grad_norm(grads, max_norm=1.0)
-                opt_fp32.update(self.model, grads)
-                mx.eval(loss_val, self.model.parameters(), opt_fp32.state)
-                losses.append(float(loss_val.item()))
+                acc_grads = None
+                step_loss = 0.0
+                for _ in range(accum):
+                    inp, y_target, target_start = _next_example()
+                    loss_val, grads = loss_and_grad(self.model, inp, y_target, target_start)
+                    acc_grads = _add_grads(acc_grads, grads)
+                    mx.eval(loss_val, acc_grads)
+                    step_loss += float(loss_val.item())
+                avg_grads = _scale_grads(acc_grads, 1.0 / accum) if accum > 1 else acc_grads
+                avg_grads, _ = optim.clip_grad_norm(avg_grads, max_norm=1.0)
+                opt_fp32.update(self.model, avg_grads)
+                mx.eval(self.model.parameters(), opt_fp32.state)
+                losses.append(step_loss / accum)
                 if (step + 1) % 8 == 0:
                     mx.clear_cache()
 
@@ -1020,21 +1052,24 @@ class MLXKernel:
                     weight_decay=0.0,
                 )
                 for step in range(ste_steps):
-                    if step % len(cached_examples) == 0:
-                        rng.shuffle(order)
-                    ex_idx = int(order[step % len(cached_examples)])
-                    inp, y_target, target_start = cached_examples[ex_idx]
-
-                    loss_val, grads = loss_and_grad(self.model, inp, y_target, target_start)
-                    grads, _ = optim.clip_grad_norm(grads, max_norm=1.0)
-                    opt_ste.update(self.model, grads)
+                    acc_grads = None
+                    step_loss = 0.0
+                    for _ in range(accum):
+                        inp, y_target, target_start = _next_example()
+                        loss_val, grads = loss_and_grad(self.model, inp, y_target, target_start)
+                        acc_grads = _add_grads(acc_grads, grads)
+                        mx.eval(loss_val, acc_grads)
+                        step_loss += float(loss_val.item())
+                    avg_grads = _scale_grads(acc_grads, 1.0 / accum) if accum > 1 else acc_grads
+                    avg_grads, _ = optim.clip_grad_norm(avg_grads, max_norm=1.0)
+                    opt_ste.update(self.model, avg_grads)
                     for name in layer_names:
                         lyr = self.instrumented[name]
                         if lyr.lora_a is not None and lyr.lora_b is not None:
                             lyr.lora_a = mx.clip(lyr.lora_a, -1.0, 1.0)
                             lyr.lora_b = mx.clip(lyr.lora_b, -1.0, 1.0)
-                    mx.eval(loss_val, self.model.parameters(), opt_ste.state)
-                    losses.append(float(loss_val.item()))
+                    mx.eval(self.model.parameters(), opt_ste.state)
+                    losses.append(step_loss / accum)
                     if (step + 1) % 8 == 0:
                         mx.clear_cache()
 
