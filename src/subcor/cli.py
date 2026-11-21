@@ -278,13 +278,19 @@ def _run_serve_cli(args: argparse.Namespace) -> int:
         else (state_dir / "exports").resolve()
     )
     tenants = tuple(t.strip() for t in (args.tenants or []) if t.strip())
-    projections = (
-        tuple(p.strip() for p in args.projections.split(",") if p.strip())
-        if args.projections
-        else None
-    )
-    print(f"Loading frozen base kernel '{args.model}' ...")
-    kernel = MLXServingAdapter(model_id=args.model, target_projections=projections)
+    if args.backend == "llamacpp":
+        from subcor.backends.llamacpp_kernel import LlamaCppServingAdapter
+
+        print(f"Connecting to llama-server backend at '{args.llamacpp_url}' ({args.model}) ...")
+        kernel = LlamaCppServingAdapter(base_url=args.llamacpp_url, model_id=args.model)
+    else:
+        projections = (
+            tuple(p.strip() for p in args.projections.split(",") if p.strip())
+            if args.projections
+            else None
+        )
+        print(f"Loading frozen base kernel '{args.model}' ...")
+        kernel = MLXServingAdapter(model_id=args.model, target_projections=projections)
     manager = TenantManager(state_dir=state_dir, kernel=kernel, initial_tenants=tenants)
     server = SubcorHTTPServer(
         (args.host, args.port),
@@ -589,6 +595,18 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=None,
         help="Sandboxed root directory for HTTP export-capheos requests (default: <state-dir>/exports).",
+    )
+    serve_cmd.add_argument(
+        "--backend",
+        choices=("mlx", "llamacpp"),
+        default="mlx",
+        help="Inference backend: 'mlx' (Apple Silicon) or 'llamacpp' (Linux/CUDA/ROCm/CPU llama-server).",
+    )
+    serve_cmd.add_argument(
+        "--llamacpp-url",
+        type=str,
+        default="http://127.0.0.1:8080",
+        help="Base URL of an external llama-server when --backend llamacpp is selected.",
     )
     serve_cmd.add_argument(
         "--projections",
