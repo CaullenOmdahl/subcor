@@ -4,6 +4,7 @@ Governed weight-space surgery, function-preserving dynamic low-rank expansion,
 and sub-1-bit binary Skill Units over frozen quantized base kernels.
 """
 
+from subcor.auth import AuthPolicy, AuthPrincipal
 from subcor.benchmark import (
     AxisSummary,
     BenchmarkCase,
@@ -52,6 +53,8 @@ __version__ = "0.1.0"
 
 __all__ = [
     "AdaptationMode",
+    "AuthPolicy",
+    "AuthPrincipal",
     "AxisSummary",
     "BenchmarkCase",
     "BenchmarkLedger",

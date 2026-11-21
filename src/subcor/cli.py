@@ -253,21 +253,40 @@ def _run_mlx_moe_cli(args: argparse.Namespace) -> int:
 
 
 def _run_serve_cli(args: argparse.Namespace) -> int:
+    from subcor.auth import AuthPolicy
     from subcor.server import MLXServingAdapter, SubcorHTTPServer, TenantManager
 
     api_key = args.api_key or os.environ.get("SUBCOR_API_KEY")
-    if args.host not in ("127.0.0.1", "localhost", "::1") and not api_key:
-        print(
-            "WARNING: Binding to a non-loopback address without --api-key / SUBCOR_API_KEY. "
-            "Set a bearer key before exposing on LAN."
+    if args.auth_config is not None:
+        auth_policy = AuthPolicy.from_json_file(args.auth_config.expanduser().resolve())
+    elif api_key:
+        auth_policy = AuthPolicy.from_single_key(api_key)
+    else:
+        auth_policy = AuthPolicy.disabled()
+
+    is_loopback = args.host in ("127.0.0.1", "localhost", "::1")
+    if not is_loopback and not auth_policy.enabled and not args.allow_unauthenticated:
+        raise SystemExit(
+            f"Refusing to bind to non-loopback address '{args.host}' without authentication. "
+            "Pass --api-key / SUBCOR_API_KEY, --auth-config, or --allow-unauthenticated."
         )
 
     state_dir = args.state_dir.expanduser().resolve()
+    export_root = (
+        args.export_root.expanduser().resolve()
+        if args.export_root is not None
+        else (state_dir / "exports").resolve()
+    )
     tenants = tuple(t.strip() for t in (args.tenants or []) if t.strip())
     print(f"Loading frozen base kernel '{args.model}' ...")
     kernel = MLXServingAdapter(model_id=args.model)
     manager = TenantManager(state_dir=state_dir, kernel=kernel, initial_tenants=tenants)
-    server = SubcorHTTPServer((args.host, args.port), manager=manager, api_key=api_key)
+    server = SubcorHTTPServer(
+        (args.host, args.port),
+        manager=manager,
+        auth_policy=auth_policy,
+        export_root=export_root,
+    )
 
     print("=========================================================================")
     print(" SUBCOR — Multi-Tenant Server Ready")
@@ -276,7 +295,8 @@ def _run_serve_cli(args: argparse.Namespace) -> int:
     print(f"OpenAI BaseURL : http://{args.host}:{args.port}/v1")
     print(f"Frozen Kernel  : {args.model}")
     print(f"State Dir      : {state_dir}")
-    print(f"Auth           : {'Bearer token enabled' if api_key else 'DISABLED (loopback dev)'}")
+    print(f"Export Root    : {export_root}")
+    print(f"Auth           : {'Enabled' if auth_policy.enabled else 'DISABLED (loopback dev)'}")
     print(f"Tenants        : {', '.join(manager.list_tenants()) or '(auto-create on request)'}")
     print("=========================================================================")
     try:
@@ -520,6 +540,23 @@ def main(argv: list[str] | None = None) -> int:
         type=str,
         default=None,
         help="Optional bearer API key (or set SUBCOR_API_KEY env var).",
+    )
+    serve_cmd.add_argument(
+        "--auth-config",
+        type=Path,
+        default=None,
+        help="JSON file mapping bearer tokens to scoped actors, roles, and tenants.",
+    )
+    serve_cmd.add_argument(
+        "--export-root",
+        type=Path,
+        default=None,
+        help="Sandboxed root directory for HTTP export-capheos requests (default: <state-dir>/exports).",
+    )
+    serve_cmd.add_argument(
+        "--allow-unauthenticated",
+        action="store_true",
+        help="Explicitly allow binding a non-loopback host without auth (unsafe on shared LANs).",
     )
 
     bench_cmd = sub.add_parser(
