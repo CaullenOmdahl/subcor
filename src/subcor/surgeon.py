@@ -192,3 +192,79 @@ class WeightSpaceSurgeon:
             alpha=alpha,
             modified_fraction_rank=rank_fraction,
         )
+
+    def synthesize_column_targeted_patch(
+        self,
+        diagnosis: LayerDiagnosis,
+        w_base: np.ndarray,
+        *,
+        adapter_name: str,
+        alpha: float = 1.0,
+        column_fraction: float = 0.25,
+    ) -> SurgicalPatch:
+        """Synthesize a sparse column-targeted zero-gradient ablation patch (Issue #6).
+
+        Restricts ablation to the top `column_fraction` of input columns whose
+        weight vectors align most strongly with the failure subspace U_k
+        (matching MIT Experiment 8's selective neuron/column edits to preserve
+        unrelated clean features).
+        """
+        if not (0.0 < column_fraction <= 1.0):
+            raise ValueError(f"column_fraction must be in (0.0, 1.0], got {column_fraction}")
+        base_patch = self.synthesize_ablation_patch(
+            diagnosis, w_base, adapter_name=adapter_name, alpha=alpha
+        )
+        if column_fraction >= 1.0:
+            return base_patch
+
+        a_mat = base_patch.adapter.a.copy()  # (rank, d_in)
+        col_energy = np.linalg.norm(a_mat, axis=0)  # (d_in,)
+        k_cols = max(1, int(round(column_fraction * a_mat.shape[1])))
+        keep_idx = np.argpartition(col_energy, -k_cols)[-k_cols:]
+        mask = np.zeros(a_mat.shape[1], dtype=np.float64)
+        mask[keep_idx] = 1.0
+        a_masked = a_mat * mask[np.newaxis, :]
+
+        adapter = LowRankAdapter(
+            name=adapter_name,
+            a=a_masked,
+            b=base_patch.adapter.b.copy(),
+            scale=1.0,
+            binary_ste=False,
+            frozen=True,
+        )
+        return SurgicalPatch(
+            layer_name=diagnosis.layer_name,
+            adapter=adapter,
+            diagnosis=diagnosis,
+            alpha=alpha,
+            modified_fraction_rank=base_patch.modified_fraction_rank * column_fraction,
+        )
+
+    def synthesize_multilayer_patches(
+        self,
+        ranked_diagnoses: list[LayerDiagnosis],
+        weights_by_layer: dict[str, np.ndarray],
+        *,
+        top_layers: int = 2,
+        alpha: float = 0.5,
+        column_fraction: float = 0.25,
+        adapter_prefix: str = "surgery",
+    ) -> list[SurgicalPatch]:
+        """Coordinate sparse column-targeted ablation patches across top-M ranked layers."""
+        if top_layers <= 0:
+            raise ValueError("top_layers must be >= 1")
+        patches: list[SurgicalPatch] = []
+        for diag in ranked_diagnoses[:top_layers]:
+            if diag.layer_name not in weights_by_layer:
+                continue
+            patches.append(
+                self.synthesize_column_targeted_patch(
+                    diag,
+                    weights_by_layer[diag.layer_name],
+                    adapter_name=f"{adapter_prefix}:{diag.layer_name}:a{alpha:.2f}",
+                    alpha=alpha,
+                    column_fraction=column_fraction,
+                )
+            )
+        return patches

@@ -278,8 +278,13 @@ def _run_serve_cli(args: argparse.Namespace) -> int:
         else (state_dir / "exports").resolve()
     )
     tenants = tuple(t.strip() for t in (args.tenants or []) if t.strip())
+    projections = (
+        tuple(p.strip() for p in args.projections.split(",") if p.strip())
+        if args.projections
+        else None
+    )
     print(f"Loading frozen base kernel '{args.model}' ...")
-    kernel = MLXServingAdapter(model_id=args.model)
+    kernel = MLXServingAdapter(model_id=args.model, target_projections=projections)
     manager = TenantManager(state_dir=state_dir, kernel=kernel, initial_tenants=tenants)
     server = SubcorHTTPServer(
         (args.host, args.port),
@@ -361,6 +366,10 @@ def _run_bench_cli(args: argparse.Namespace) -> int:
     if args.bench_cmd == "run":
         suite = BenchmarkSuite.from_json_file(args.suite) if args.suite else core_v1_suite()
         if args.endpoint:
+            if args.tenant is not None:
+                print(
+                    "WARNING: --tenant is ignored with --endpoint; select tenant via --model subcor/<tenant>."
+                )
             api_key = args.api_key or os.environ.get("SUBCOR_API_KEY")
             snap = run_benchmark_http(
                 suite=suite,
@@ -582,6 +591,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Sandboxed root directory for HTTP export-capheos requests (default: <state-dir>/exports).",
     )
     serve_cmd.add_argument(
+        "--projections",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated linear projections to instrument (e.g. "
+            "'mlp.down_proj,mlp.gate_proj,mlp.up_proj,self_attn.o_proj'). Default: mlp.down_proj."
+        ),
+    )
+    serve_cmd.add_argument(
         "--allow-unauthenticated",
         action="store_true",
         help="Explicitly allow binding a non-loopback host without auth (unsafe on shared LANs).",
@@ -737,24 +755,32 @@ def main(argv: list[str] | None = None) -> int:
         return _run_recompile_cli(args)
 
     if args.command == "inspect":
+        from subcor.types import IntegrityError
+
         registry = SkillUnitRegistry(args.units_dir)
         rows = []
+        any_failed = False
         for m in registry.list_units():
-            registry.load_verified_deltas(m.unit_id)
-            rows.append(
-                {
-                    "unit_id": m.unit_id,
-                    "version": m.version,
-                    "state": m.state.value,
-                    "mode": m.mode.value,
-                    "bits_per_weight": round(m.effective_bits_per_weight, 4),
-                    "payload_bytes": m.payload_bytes,
-                    "sha256": m.payload_sha256[:16],
-                    "integrity": "verified",
-                }
-            )
+            row: dict[str, object] = {
+                "unit_id": m.unit_id,
+                "version": m.version,
+                "base_kernel_id": m.base_kernel_id,
+                "state": m.state.value,
+                "mode": m.mode.value,
+                "bits_per_weight": round(m.effective_bits_per_weight, 4),
+                "payload_bytes": m.payload_bytes,
+                "sha256": m.payload_sha256[:16],
+            }
+            try:
+                registry.load_verified_deltas(m.unit_id)
+                row["integrity"] = "verified"
+            except (IntegrityError, FileNotFoundError, ValueError) as exc:
+                any_failed = True
+                row["integrity"] = "failed"
+                row["error"] = str(exc)
+            rows.append(row)
         print(json.dumps(rows, indent=2))
-        return 0
+        return 1 if any_failed else 0
 
     if args.command == "export-capheos":
         registry = SkillUnitRegistry(args.units_dir)

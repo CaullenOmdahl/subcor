@@ -440,7 +440,10 @@ def run_live_intern_distillation(
             exported_capheos = registry.export_capheos_unit(unit.unit_id, export_capheos_dir)
         if export_safetensors_dir is not None:
             exported_st = export_mlx_lora_safetensors(
-                unit.unit_id, registry, export_safetensors_dir
+                unit.unit_id,
+                registry,
+                export_safetensors_dir,
+                model=kernel.model,
             )
 
         # Mount promoted unit, then demonstrate atomic rollback to exact frozen base.
@@ -526,16 +529,25 @@ def run_live_weight_surgery(
     model_id: str = DEFAULT_COMPACT_MODEL,
     max_tokens: int = 160,
     alphas: tuple[float, ...] = (0.15, 0.30, 0.50, 0.80),
+    top_layers: int = 2,
+    column_fraction: float = 0.25,
 ) -> LiveSurgeryReport:
-    """Run zero-gradient contrastive activation diagnosis & ablation on a live MLX model.
+    """Run zero-gradient multi-layer column-targeted contrastive ablation on a live MLX model.
 
     Uses matched `enable_thinking=True` templates across clean vs. overthinking prompts,
-    selects `alpha` on sweep prompts, and certifies the *actual compressed Skill Unit*
+    selects `alpha` on sweep prompts across the top-M ranked layers with sparse
+    `column_fraction` column masking, and certifies the *actual compressed Skill Unit*
     against held-out overthinking prompts and a real general-QA baseline check.
     """
     work_dir.mkdir(parents=True, exist_ok=True)
+    units_dir = work_dir / "units"
+    if (units_dir / "mlx-thinking-ablation-v1").exists():
+        raise GovernanceError(
+            f"Work directory '{work_dir}' already contains 'mlx-thinking-ablation-v1'; "
+            "use a fresh --work-dir"
+        )
     store = TextTrajectoryStore(work_dir / "telemetry" / "surgery_trajectories.jsonl")
-    registry = SkillUnitRegistry(work_dir / "units")
+    registry = SkillUnitRegistry(units_dir)
 
     # Instrument layers spanning MIT Experiment 8's targets (15 & 19) plus neighbors.
     kernel = MLXKernel(model_id=model_id, target_layer_indices=[7, 11, 15, 19, 22])
@@ -633,23 +645,32 @@ def run_live_weight_surgery(
 
     ranked = surgeon.rank_layers(contrast, rank=1)
     top_diag = ranked[0]
-    w_base = kernel.instrumented[top_diag.layer_name].dequantize_base_weight()
+    weights_by_layer = {
+        d.layer_name: kernel.instrumented[d.layer_name].dequantize_base_weight()
+        for d in ranked[: max(1, top_layers)]
+    }
 
-    # Zero-gradient sweep over alpha on SWEEP prompts ONLY (disjoint from held-out eval).
+    # Zero-gradient sweep over alpha across top-M layers on SWEEP prompts ONLY.
     best_alpha = alphas[0]
     best_sweep_tokens = float("inf")
     best_sweep_limit = 1.0
-    best_patch = None
+    best_patches = None
 
     for alpha in alphas:
-        patch = surgeon.synthesize_ablation_patch(
-            top_diag,
-            w_base,
-            adapter_name=f"surgery-alpha-{alpha:.2f}",
+        patches = surgeon.synthesize_multilayer_patches(
+            ranked,
+            weights_by_layer,
+            top_layers=max(1, top_layers),
             alpha=alpha,
+            column_fraction=column_fraction,
         )
-        kernel.instrumented[top_diag.layer_name].mount_adapter(patch.adapter.name, patch.adapter)
+        mounted: list[tuple[str, str]] = []
         try:
+            for patch in patches:
+                kernel.instrumented[patch.layer_name].mount_adapter(
+                    patch.adapter.name, patch.adapter
+                )
+                mounted.append((patch.layer_name, patch.adapter.name))
             traces = [
                 kernel.generate_with_trace(
                     p,
@@ -660,7 +681,8 @@ def run_live_weight_surgery(
                 for p in _SURGERY_OVERTHINK_SWEEP_PROMPTS
             ]
         finally:
-            kernel.instrumented[top_diag.layer_name].unmount_adapter(patch.adapter.name)
+            for layer_name, adapter_name in reversed(mounted):
+                kernel.instrumented[layer_name].unmount_adapter(adapter_name)
 
         mean_tok = float(np.mean([t.tokens_generated for t in traces]))
         lim_rate = sum(1 for t in traces if t.hit_token_limit) / len(traces)
@@ -668,26 +690,29 @@ def run_live_weight_surgery(
             best_alpha = alpha
             best_sweep_limit = lim_rate
             best_sweep_tokens = mean_tok
-            best_patch = patch
+            best_patches = patches
 
-    assert best_patch is not None
-    delta = build_layer_delta(
-        top_diag.layer_name,
-        best_patch.adapter,
-        encoding=DeltaEncoding.SUB1BIT_BINARY,
-        sub1bit_rank=1,
-    )
+    assert best_patches is not None
+    deltas = [
+        build_layer_delta(
+            patch.layer_name,
+            patch.adapter,
+            encoding=DeltaEncoding.SUB1BIT_BINARY,
+            sub1bit_rank=1,
+        )
+        for patch in best_patches
+    ]
     unit = registry.propose(
         unit_id="mlx-thinking-ablation-v1",
         version="1.0.0",
-        title="Live Zero-Gradient Contrastive Ablation Patch",
+        title="Live Zero-Gradient Multi-Layer Column-Targeted Ablation Patch",
         summary=(
-            f"Zero-gradient rank-1 contrastive ablation on {top_diag.layer_name} "
-            f"(alpha={best_alpha:.2f}) over frozen {model_id}."
+            f"Zero-gradient rank-1 column-targeted ablation ({column_fraction:.0%} cols) across "
+            f"{[p.layer_name for p in best_patches]} (alpha={best_alpha:.2f}) over frozen {model_id}."
         ),
         proposer="tools",
         mode=AdaptationMode.WEIGHT_SPACE_SURGERY,
-        deltas=[delta],
+        deltas=deltas,
         base_kernel_id=model_id,
     )
 

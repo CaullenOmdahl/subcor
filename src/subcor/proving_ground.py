@@ -259,11 +259,27 @@ def run_proving_ground(
     *,
     export_capheos_dir: Path | None = None,
     seed: int = 42,
+    overwrite: bool = False,
 ) -> ProvingGroundReport:
     """Execute the complete SUBCOR proving-ground experiment end-to-end."""
+    import shutil
+
     work_dir.mkdir(parents=True, exist_ok=True)
-    store = TrajectoryStore(work_dir / "telemetry" / "trajectories.jsonl")
-    registry = SkillUnitRegistry(work_dir / "units")
+    units_root = work_dir / "units"
+    telemetry_path = work_dir / "telemetry" / "trajectories.jsonl"
+    if overwrite:
+        if units_root.exists():
+            shutil.rmtree(units_root)
+        if telemetry_path.exists():
+            telemetry_path.unlink()
+    elif units_root.exists() and any(units_root.iterdir()):
+        raise GovernanceError(
+            f"Work directory '{work_dir}' already contains Skill Units; "
+            "pass overwrite=True or use a fresh --work-dir"
+        )
+
+    store = TrajectoryStore(telemetry_path)
+    registry = SkillUnitRegistry(units_root)
 
     net = MicroInternNet(dim=64, num_classes=4, max_steps=12, seed=seed)
 
