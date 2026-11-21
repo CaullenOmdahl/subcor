@@ -463,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
     mlx_moe_cmd.add_argument("--work-dir", type=Path, default=None)
     mlx_moe_cmd.add_argument("--rank", type=int, default=8)
     mlx_moe_cmd.add_argument("--sub1bit-rank", type=int, default=8)
-    mlx_moe_cmd.add_argument("--steps", type=int, default=90)
+    mlx_moe_cmd.add_argument("--steps", type=int, default=108)
     mlx_moe_cmd.add_argument("--lr", type=float, default=3e-4)
     mlx_moe_cmd.add_argument("--seed", type=int, default=42)
     mlx_moe_cmd.add_argument("--export-capheos", type=Path, default=None)

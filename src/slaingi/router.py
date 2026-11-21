@@ -97,12 +97,18 @@ class RouterGate:
         pos_scores = (pos @ mu_pos) - (pos @ mu_neg)
         neg_scores = (neg @ mu_pos) - (neg @ mu_neg)
 
-        # Calibrate threshold between lower tail of positives and upper tail of negatives.
+        # Calibrate threshold conservatively above observed negatives to prevent
+        # false-positive routing on unrelated general/instruction prompts.
         pos_low = float(np.quantile(pos_scores, 0.15))
         neg_high = float(np.quantile(neg_scores, 0.90))
+        neg_max = float(np.max(neg_scores))
         midpoint = 0.5 * (pos_low + neg_high) + safety_bias
-        # Never set threshold below the highest observed negative mean.
-        threshold = max(midpoint, float(np.mean(neg_scores)) + 1e-4)
+        # Push threshold toward positives (65/35 blend between neg_max and pos_low) when separable.
+        if pos_low > neg_max:
+            conservative = neg_max + 0.35 * (pos_low - neg_max) + safety_bias
+            threshold = max(midpoint, conservative)
+        else:
+            threshold = max(midpoint, float(np.mean(neg_scores)) + 1e-4)
 
         return cls(
             unit_id=unit_id,

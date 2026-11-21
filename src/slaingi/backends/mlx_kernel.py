@@ -29,6 +29,7 @@ import mlx.optimizers as optim
 import numpy as np
 from mlx.utils import tree_flatten
 from mlx_lm import generate, load
+from mlx_lm.models.base import create_attention_mask, create_ssm_mask
 from mlx_lm.sample_utils import make_sampler
 
 from slaingi.expansion import LowRankAdapter
@@ -37,6 +38,13 @@ from slaingi.router import MoESkillRouter, RoutingDecision
 from slaingi.units import LayerDeltaPayload, SkillUnitRegistry
 
 DEFAULT_COMPACT_MODEL = "mlx-community/Qwen3.5-0.8B-4bit"
+
+
+def _ste_sign_pm1(z: mx.array) -> mx.array:
+    """Binary sign in {-1, +1} with clipped Straight-Through Estimator (|z| <= 1)."""
+    hard = mx.where(z >= 0, mx.array(1.0, dtype=z.dtype), mx.array(-1.0, dtype=z.dtype))
+    clipped = mx.clip(z, -1.0, 1.0)
+    return clipped + mx.stop_gradient(hard - clipped)
 
 
 @dataclass(frozen=True)
@@ -58,12 +66,25 @@ class SlaingiMLXLinear(nn.Module):
         super().__init__()
         self.base = base
         self.layer_name = layer_name
-        self._mounted: dict[str, tuple[mx.array, mx.array, float]] = {}
+        # Native compute dtype (e.g. bfloat16/float16) avoids per-token FP32 casts on decode.
+        if isinstance(base, nn.QuantizedLinear) and hasattr(base, "scales"):
+            self._compute_dtype = base.scales.dtype
+        elif hasattr(base, "weight"):
+            self._compute_dtype = base.weight.dtype
+        else:
+            self._compute_dtype = mx.float16
 
-        # Optional trainable LoRA branch (stored as direct attributes for MLX autodiff).
+        # Mounted frozen adapters stored pre-scaled in native compute dtype: (a_t, b_t_scaled).
+        self._mounted: dict[str, tuple[mx.array, mx.array]] = {}
+
+        # Optional trainable LoRA / Binary STE (QAT) branch for MLX autodiff.
         self.lora_a: mx.array | None = None  # (d_in, rank)
         self.lora_b: mx.array | None = None  # (rank, d_out)
+        self.s_in: mx.array | None = None  # (d_in,) used when _lora_binary_ste=True
+        self.s_out: mx.array | None = None  # (d_out,) used when _lora_binary_ste=True
+        self.sigma: mx.array | None = None  # (rank,) used when _lora_binary_ste=True
         self._lora_scale: float = 1.0
+        self._lora_binary_ste: bool = False
         self._lora_active: bool = False
 
         # Toggleable mean activation recorder (stores numpy accumulator off-graph).
@@ -115,18 +136,18 @@ class SlaingiMLXLinear(nn.Module):
         return self._act_sum / float(self._act_count)
 
     def mount_adapter(self, name: str, adapter: LowRankAdapter) -> None:
-        """Mount a frozen LowRankAdapter (Delta W = scale * B @ A) onto this layer."""
+        """Mount a frozen LowRankAdapter (Delta W = scale * B @ A) in native compute dtype."""
         d_out, d_in = self.shape
         if adapter.d_out != d_out or adapter.d_in != d_in:
             raise ValueError(
                 f"Adapter '{name}' shape ({adapter.d_out}, {adapter.d_in}) does not match "
                 f"layer '{self.layer_name}' shape ({d_out}, {d_in})"
             )
-        # Store as MLX (A_T: d_in x r, B_T: r x d_out) for efficient (x @ A_T) @ B_T.
-        a_t = mx.array(adapter.a.T.astype(np.float32))
-        b_t = mx.array(adapter.b.T.astype(np.float32))
+        # Pre-fold scale into b_t and store in native compute dtype -> zero casts per decode token.
+        a_t = mx.array(adapter.a.T.astype(np.float32)).astype(self._compute_dtype)
+        b_t = mx.array((adapter.scale * adapter.b.T).astype(np.float32)).astype(self._compute_dtype)
         mx.eval(a_t, b_t)
-        self._mounted[name] = (a_t, b_t, float(adapter.scale))
+        self._mounted[name] = (a_t, b_t)
 
     def unmount_adapter(self, name: str) -> None:
         self._mounted.pop(name, None)
@@ -136,23 +157,80 @@ class SlaingiMLXLinear(nn.Module):
         *,
         rank: int,
         scale: float = 1.0,
+        binary_ste: bool = False,
         seed: int = 0,
     ) -> None:
-        """Attach a zero-initialized trainable LoRA branch (exact zero perturbation)."""
+        """Attach a zero-initialized trainable LoRA or Binary STE (QAT) branch."""
         d_out, d_in = self.shape
         rng = np.random.default_rng(seed)
-        bound = 1.0 / math.sqrt(d_in)
-        self.lora_a = mx.array(rng.uniform(-bound, bound, size=(d_in, rank)).astype(np.float32))
-        self.lora_b = mx.zeros((rank, d_out), dtype=mx.float32)
         self._lora_scale = float(scale)
+        self._lora_binary_ste = binary_ste
         self._lora_active = True
         self.base.freeze()
-        mx.eval(self.lora_a, self.lora_b)
+
+        if binary_ste:
+            # Matches Sub1BitMatrix 1-to-1; s_out=0 guarantees exact zero initial perturbation.
+            self.lora_a = mx.array(rng.uniform(-0.4, 0.4, size=(d_in, rank)).astype(np.float32))
+            self.lora_b = mx.array(rng.uniform(-0.4, 0.4, size=(rank, d_out)).astype(np.float32))
+            self.s_in = mx.ones((d_in,), dtype=mx.float32)
+            self.s_out = mx.zeros((d_out,), dtype=mx.float32)
+            self.sigma = mx.full((rank,), 1.0 / math.sqrt(d_in * rank), dtype=mx.float32)
+            mx.eval(self.lora_a, self.lora_b, self.s_in, self.s_out, self.sigma)
+        else:
+            bound = 1.0 / math.sqrt(d_in)
+            self.lora_a = mx.array(rng.uniform(-bound, bound, size=(d_in, rank)).astype(np.float32))
+            self.lora_b = mx.zeros((rank, d_out), dtype=mx.float32)
+            self.s_in = None
+            self.s_out = None
+            self.sigma = None
+            mx.eval(self.lora_a, self.lora_b)
+
+    def convert_lora_to_binary_ste(self) -> None:
+        """Warm-start Binary STE (QAT) parameters directly from the current FP32 LoRA delta.
+
+        Mirrors Gemma 4 QAT: continuous warm-start lands in a good basin first, then
+        initializing STE from Sub1BitMatrix lets STE refine around {-1, +1} rounding
+        without random-sign seed instability.
+        """
+        if not self._lora_active or self._lora_binary_ste:
+            return
+        fp32_adapter = self.extract_trainable_lora(adapter_name=f"warm:{self.layer_name}")
+        fac = fp32_adapter.compress_sub1bit(rank=fp32_adapter.rank)
+        u_bin, v_bin = fac.unpack_factors()  # u: (d_out, r), v: (d_in, r)
+
+        # Latent weights start at +-0.5 inside [-1, 1] so STE gradients remain responsive.
+        self.lora_a = mx.array((0.5 * v_bin).astype(np.float32))  # (d_in, rank)
+        self.lora_b = mx.array((0.5 * u_bin.T).astype(np.float32))  # (rank, d_out)
+        self.s_in = mx.array(fac.s2.astype(np.float32))
+        self.s_out = mx.array(fac.s1.astype(np.float32))
+        self.sigma = mx.array(fac.sigma.astype(np.float32))
+        self._lora_scale = 1.0
+        self._lora_binary_ste = True
+        mx.eval(self.lora_a, self.lora_b, self.s_in, self.s_out, self.sigma)
+
+    def trainable_lora_keys(self) -> list[str]:
+        if self._lora_binary_ste:
+            return ["lora_a", "lora_b", "s_in", "s_out", "sigma"]
+        return ["lora_a", "lora_b"]
 
     def extract_trainable_lora(self, adapter_name: str) -> LowRankAdapter:
-        """Convert the active trainable MLX LoRA branch into a SLAINGI LowRankAdapter."""
+        """Convert the active trainable MLX branch into a SLAINGI LowRankAdapter."""
         if not self._lora_active or self.lora_a is None or self.lora_b is None:
             raise RuntimeError(f"No trainable LoRA attached on layer '{self.layer_name}'")
+        if self._lora_binary_ste:
+            assert self.s_in is not None and self.s_out is not None and self.sigma is not None
+            mx.eval(self.lora_a, self.lora_b, self.s_in, self.s_out, self.sigma)
+            return LowRankAdapter(
+                name=adapter_name,
+                a=np.array(self.lora_a, dtype=np.float64).T,
+                b=np.array(self.lora_b, dtype=np.float64).T,
+                scale=self._lora_scale,
+                binary_ste=True,
+                s_in=np.array(self.s_in, dtype=np.float64),
+                s_out=np.array(self.s_out, dtype=np.float64),
+                sigma=np.array(self.sigma, dtype=np.float64),
+                frozen=True,
+            )
         mx.eval(self.lora_a, self.lora_b)
         a_np = np.array(self.lora_a, dtype=np.float64).T  # (rank, d_in)
         b_np = np.array(self.lora_b, dtype=np.float64).T  # (d_out, rank)
@@ -169,22 +247,33 @@ class SlaingiMLXLinear(nn.Module):
         """Remove trainable LoRA branch without touching frozen base or mounted units."""
         self.lora_a = None
         self.lora_b = None
+        self.s_in = None
+        self.s_out = None
+        self.sigma = None
+        self._lora_binary_ste = False
         self._lora_active = False
 
     def __call__(self, x: mx.array) -> mx.array:
         y = self.base(x)
-        dtype = x.dtype
 
         if not self._bypass_adapters:
             if self._mounted:
-                x_f32 = x.astype(mx.float32)
-                for a_t, b_t, scale in self._mounted.values():
-                    delta = ((x_f32 @ a_t) @ b_t) * scale
-                    y = y + delta.astype(dtype)
+                for a_t, b_t in self._mounted.values():
+                    y = y + (x @ a_t) @ b_t
 
             if self._lora_active and self.lora_a is not None and self.lora_b is not None:
+                dtype = x.dtype
                 x_f32 = x.astype(mx.float32)
-                z = ((x_f32 @ self.lora_a) @ self.lora_b) * self._lora_scale
+                if self._lora_binary_ste:
+                    assert (
+                        self.s_in is not None and self.s_out is not None and self.sigma is not None
+                    )
+                    a_q = _ste_sign_pm1(self.lora_a)
+                    b_q = _ste_sign_pm1(self.lora_b)
+                    h = ((x_f32 * self.s_in) @ a_q) * self.sigma
+                    z = ((h @ b_q) * self.s_out) * self._lora_scale
+                else:
+                    z = ((x_f32 @ self.lora_a) @ self.lora_b) * self._lora_scale
                 y = y + z.astype(dtype)
 
         if self._recording:
@@ -368,6 +457,34 @@ class MLXKernel:
                 if name.startswith(prefix):
                     layer.unmount_adapter(name)
 
+    def _forward_until_layer(self, ids: mx.array, tap_layer: str) -> mx.array:
+        """Run frozen-base prefill up through `tap_layer`, skipping later layers and lm_head."""
+        parts = tap_layer.split(".")
+        tap_idx = (
+            int(parts[1])
+            if len(parts) >= 2 and parts[0] == "layers" and parts[1].isdigit()
+            else None
+        )
+        inner = getattr(self.model, "model", None)
+
+        if (
+            tap_idx is not None
+            and inner is not None
+            and hasattr(inner, "embed_tokens")
+            and hasattr(inner, "layers")
+        ):
+            hidden = inner.embed_tokens(ids)
+            fa_mask = create_attention_mask(hidden, None)
+            ssm_mask = create_ssm_mask(hidden, None) if hasattr(inner, "ssm_idx") else None
+            for layer in inner.layers[: tap_idx + 1]:
+                mask = ssm_mask if getattr(layer, "is_linear", False) else fa_mask
+                hidden = layer(hidden, mask=mask, cache=None)
+            return hidden
+
+        if inner is not None:
+            return inner(ids)
+        return self.model(ids)
+
     def encode_prompt_embedding(
         self,
         user_prompt: str,
@@ -378,9 +495,9 @@ class MLXKernel:
     ) -> np.ndarray:
         """Compute an invariant frozen-base hidden activation embedding at tap_layer.
 
-        Temporarily bypasses all mounted skill adapters so the routing representation
-        depends strictly on the immutable shared base kernel, preventing router drift
-        as new Skill Units are added or removed.
+        Bypasses all mounted skill adapters AND early-exits right after `tap_layer`
+        (skipping downstream layers and the large vocab lm_head) so routing is fast
+        and strictly invariant to installed Skill Units.
         """
         if tap_layer not in self.instrumented:
             raise KeyError(f"tap_layer '{tap_layer}' is not instrumented in this MLXKernel")
@@ -396,8 +513,8 @@ class MLXKernel:
         tap = self.instrumented[tap_layer]
         tap.start_recording()
         try:
-            logits = self.model(ids)
-            mx.eval(logits)
+            out = self._forward_until_layer(ids, tap_layer)
+            mx.eval(out)
             mean_act = tap.stop_recording()
         finally:
             for layer in self.instrumented.values():
@@ -458,9 +575,10 @@ class MLXKernel:
         system_prompt: str | None = None,
         enable_thinking: bool = False,
         rank: int = 8,
-        scale: float = 2.0,
-        steps: int = 40,
-        lr: float = 3e-3,
+        scale: float = 1.0,
+        binary_ste: bool = False,
+        steps: int = 108,
+        lr: float = 3e-4,
         seed: int = 42,
     ) -> tuple[dict[str, LowRankAdapter], list[float], float]:
         """Function-preserving LoRA expansion + Apple Silicon GPU QLoRA adaptation.
@@ -495,12 +613,15 @@ class MLXKernel:
             enable_thinking=enable_thinking,
         )
 
-        # Freeze entire model, then attach zero-initialized trainable LoRA branches.
+        # Freeze entire model, then attach zero-initialized FP32 LoRA branches.
+        # When binary_ste=True, we run Two-Stage QAT:
+        #   Stage 1 (~65% steps): FP32 warm-start for seed-stable basin discovery
+        #   Stage 2 (~35% steps): Convert to Sub1Bit Binary STE and refine around {-1, +1}
         self.model.freeze()
         for idx, name in enumerate(layer_names):
             layer = self.instrumented[name]
-            layer.attach_trainable_lora(rank=rank, scale=scale, seed=seed + idx)
-            layer.unfreeze(keys=["lora_a", "lora_b"], recurse=False)
+            layer.attach_trainable_lora(rank=rank, scale=scale, binary_ste=False, seed=seed + idx)
+            layer.unfreeze(keys=layer.trainable_lora_keys(), recurse=False)
 
         # Verify strict zero-perturbation invariant on live transformer logits.
         logits_after = self.probe_logits(
@@ -542,8 +663,11 @@ class MLXKernel:
             return mx.sum(ce * mask) / mx.maximum(mx.sum(mask), mx.array(1.0))
 
         loss_and_grad = nn.value_and_grad(self.model, loss_fn)
-        lr_schedule = optim.cosine_decay(lr, max(1, steps), end=lr * 0.1)
-        optimizer = optim.AdamW(learning_rate=lr_schedule, weight_decay=0.01)
+
+        fp32_steps = int(round(steps * 0.70)) if binary_ste and steps >= 6 else steps
+        ste_steps = steps - fp32_steps
+        fp32_lr = min(lr, 4e-4)
+        ste_lr = min(lr * 0.25, 8e-5)
 
         losses: list[float] = []
         rng = np.random.default_rng(seed)
@@ -553,7 +677,12 @@ class MLXKernel:
         # differentiable ops instead of inference-only custom Metal kernels.
         self.model.train()
         try:
-            for step in range(steps):
+            # Stage 1: FP32 continuous warm-start.
+            opt_fp32 = optim.AdamW(
+                learning_rate=optim.cosine_decay(fp32_lr, max(1, fp32_steps), end=fp32_lr * 0.15),
+                weight_decay=0.01,
+            )
+            for step in range(fp32_steps):
                 if step % len(encoded_examples) == 0:
                     rng.shuffle(order)
                 ex_idx = int(order[step % len(encoded_examples)])
@@ -561,9 +690,38 @@ class MLXKernel:
 
                 loss_val, grads = loss_and_grad(self.model, x_ids, y_ids, mask)
                 grads, _ = optim.clip_grad_norm(grads, max_norm=1.0)
-                optimizer.update(self.model, grads)
-                mx.eval(loss_val, self.model.parameters(), optimizer.state)
+                opt_fp32.update(self.model, grads)
+                mx.eval(loss_val, self.model.parameters(), opt_fp32.state)
                 losses.append(float(loss_val.item()))
+
+            # Stage 2: Binary STE (QAT) refinement directly on {-1, +1} factors + scales.
+            if ste_steps > 0:
+                self.model.freeze()
+                for name in layer_names:
+                    lyr = self.instrumented[name]
+                    lyr.convert_lora_to_binary_ste()
+                    lyr.unfreeze(keys=lyr.trainable_lora_keys(), recurse=False)
+
+                opt_ste = optim.AdamW(
+                    learning_rate=optim.cosine_decay(ste_lr, max(1, ste_steps), end=ste_lr * 0.1),
+                    weight_decay=0.0,
+                )
+                for step in range(ste_steps):
+                    if step % len(encoded_examples) == 0:
+                        rng.shuffle(order)
+                    ex_idx = int(order[step % len(encoded_examples)])
+                    x_ids, y_ids, mask = encoded_examples[ex_idx]
+
+                    loss_val, grads = loss_and_grad(self.model, x_ids, y_ids, mask)
+                    grads, _ = optim.clip_grad_norm(grads, max_norm=1.0)
+                    opt_ste.update(self.model, grads)
+                    for name in layer_names:
+                        lyr = self.instrumented[name]
+                        if lyr.lora_a is not None and lyr.lora_b is not None:
+                            lyr.lora_a = mx.clip(lyr.lora_a, -1.0, 1.0)
+                            lyr.lora_b = mx.clip(lyr.lora_b, -1.0, 1.0)
+                    mx.eval(loss_val, self.model.parameters(), opt_ste.state)
+                    losses.append(float(loss_val.item()))
 
             extracted: dict[str, LowRankAdapter] = {}
             for name in layer_names:

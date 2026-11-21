@@ -28,12 +28,29 @@ def test_slaingi_mlx_linear_zero_perturbation_recording_and_rollback() -> None:
     y_base = wrapped(x)
     mx.eval(y_base)
 
-    # Zero-initialized trainable LoRA produces exact zero output perturbation.
-    wrapped.attach_trainable_lora(rank=4, scale=2.0, seed=7)
-    y_expanded = wrapped(x)
-    mx.eval(y_expanded)
-    assert float(mx.max(mx.abs(y_expanded - y_base)).item()) == 0.0
-    wrapped.detach_trainable_lora()
+    # Zero-initialized trainable LoRA produces exact zero output perturbation (both FP32 and Binary STE).
+    for binary_ste in (False, True):
+        wrapped.attach_trainable_lora(rank=4, scale=1.0, binary_ste=binary_ste, seed=7)
+        y_expanded = wrapped(x)
+        mx.eval(y_expanded)
+        assert float(mx.max(mx.abs(y_expanded - y_base)).item()) == 0.0
+        if binary_ste:
+            # Verify MLX STE produces non-zero gradients and packs directly into Sub1BitMatrix.
+            wrapped.unfreeze(keys=wrapped.trainable_lora_keys(), recurse=False)
+            target = y_base + 0.5
+            wrapped.s_out = mx.full((32,), 0.1, dtype=mx.float32)
+
+            def loss_fn(m: SlaingiMLXLinear, tgt: mx.array = target) -> mx.array:
+                return mx.mean((m(x) - tgt) ** 2)
+
+            _, grads = nn.value_and_grad(wrapped, loss_fn)(wrapped)
+            mx.eval(grads)
+            assert float(mx.sum(mx.abs(grads["lora_a"])).item()) > 0.0
+            assert float(mx.sum(mx.abs(grads["lora_b"])).item()) > 0.0
+            extracted = wrapped.extract_trainable_lora("ste-test")
+            packed = extracted.compress_sub1bit()
+            np.testing.assert_allclose(packed.reconstruct(), extracted.delta_matrix(), atol=5e-3)
+        wrapped.detach_trainable_lora()
 
     # Activation recording captures exact mean vector across batch & seq dims.
     wrapped.start_recording()

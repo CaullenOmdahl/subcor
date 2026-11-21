@@ -806,7 +806,7 @@ def run_live_moe_multi_skill(
     model_id: str = DEFAULT_COMPACT_MODEL,
     rank: int = 8,
     sub1bit_rank: int = 8,
-    steps_per_skill: int = 90,
+    steps_per_skill: int = 108,
     lr: float = 3e-4,
     export_capheos_dir: Path | None = None,
     seed: int = 42,

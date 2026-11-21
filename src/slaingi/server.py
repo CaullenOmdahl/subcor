@@ -201,6 +201,7 @@ class MLXServingAdapter:
         steps: int,
         lr: float,
         seed: int,
+        binary_ste: bool = False,
     ) -> tuple[list[LayerDeltaPayload], float, float, float]:
         adapters, losses, zero_diff = self._kernel.train_qlora_adapters(
             examples,
@@ -208,6 +209,7 @@ class MLXServingAdapter:
             enable_thinking=False,
             rank=rank,
             scale=1.0,
+            binary_ste=binary_ste,
             steps=steps,
             lr=lr,
             seed=seed,
@@ -438,7 +440,7 @@ class TenantManager:
         negative_prompts: list[str] | None = None,
         rank: int = 8,
         sub1bit_rank: int = 8,
-        steps: int = 90,
+        steps: int = 108,
         lr: float = 3e-4,
         max_regression_tolerance: float = 0.02,
         min_target_improvement: float = 0.25,
@@ -515,7 +517,7 @@ class TenantManager:
                     title=title,
                     summary=summary,
                     proposer=proposer,
-                    mode=AdaptationMode.DYNAMIC_EXPANSION_FP32,
+                    mode=AdaptationMode.DYNAMIC_EXPANSION_STE,
                     deltas=deltas,
                 )
                 gate = RouterGate.fit(
@@ -897,7 +899,7 @@ class SlaingiRequestHandler(BaseHTTPRequestHandler):
                     negative_prompts=body.get("negative_prompts"),
                     rank=int(body.get("rank", 8)),
                     sub1bit_rank=int(body.get("sub1bit_rank", 8)),
-                    steps=int(body.get("steps", 90)),
+                    steps=int(body.get("steps", 108)),
                     lr=float(body.get("lr", 3e-4)),
                     max_regression_tolerance=float(body.get("max_regression_tolerance", 0.02)),
                     min_target_improvement=float(body.get("min_target_improvement", 0.25)),
