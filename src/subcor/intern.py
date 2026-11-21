@@ -11,6 +11,8 @@ Extends SUBCOR's append-only telemetry contract to real LLM text generations:
 from __future__ import annotations
 
 import json
+import threading
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -100,30 +102,45 @@ class TextTrajectoryStore:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._io_lock = threading.Lock()
+        self.corrupted_line_count: int = 0
 
     def append(self, record: TextTrajectory) -> None:
         line = json.dumps(record.to_dict(), separators=(",", ":"), sort_keys=True)
-        with self.path.open("a", encoding="utf-8") as fh:
+        with self._io_lock, self.path.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
 
     def append_many(self, records: Iterable[TextTrajectory]) -> int:
-        count = 0
-        with self.path.open("a", encoding="utf-8") as fh:
-            for rec in records:
-                line = json.dumps(rec.to_dict(), separators=(",", ":"), sort_keys=True)
-                fh.write(line + "\n")
-                count += 1
-        return count
+        lines = [
+            json.dumps(rec.to_dict(), separators=(",", ":"), sort_keys=True) + "\n"
+            for rec in records
+        ]
+        if not lines:
+            return 0
+        with self._io_lock, self.path.open("a", encoding="utf-8") as fh:
+            fh.writelines(lines)
+        return len(lines)
 
     def load_all(self) -> list[TextTrajectory]:
         if not self.path.exists():
             return []
         out: list[TextTrajectory] = []
-        with self.path.open("r", encoding="utf-8") as fh:
-            for raw in fh:
+        corrupted = 0
+        with self._io_lock, self.path.open("r", encoding="utf-8") as fh:
+            for lineno, raw in enumerate(fh, start=1):
                 raw = raw.strip()
-                if raw:
+                if not raw:
+                    continue
+                try:
                     out.append(TextTrajectory.from_dict(json.loads(raw)))
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                    corrupted += 1
+                    warnings.warn(
+                        f"Skipping corrupted text trajectory line {lineno} in {self.path}: {exc}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+        self.corrupted_line_count = corrupted
         return out
 
     def load_verified(self, *, task_family: str | None = None) -> list[TextTrajectory]:

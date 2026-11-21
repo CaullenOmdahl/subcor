@@ -22,8 +22,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 import time
 import urllib.request
+import warnings
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -133,6 +135,41 @@ def _strip_code_fences(text: str) -> str:
     return clean
 
 
+_NEGATION_PREFIX_RE = re.compile(
+    r"(?:\b(?:not|never|neither|no|isn't|is\s+not|aren't|are\s+not|wasn't|was\s+not|rather\s+than|instead\s+of)\s+)(?:\w+\s+){0,1}$",
+    flags=re.IGNORECASE,
+)
+_NUMERIC_TOKEN_RE = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?!\w|\.\d)")
+
+
+def _strict_json_equal(actual: Any, expected: Any) -> bool:
+    """JSON equality where booleans never compare equal to ints (True != 1)."""
+    if isinstance(expected, bool) or isinstance(actual, bool):
+        return type(actual) is type(expected) and actual == expected
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        return actual.keys() == expected.keys() and all(
+            _strict_json_equal(actual[k], expected[k]) for k in expected
+        )
+    if isinstance(expected, list) and isinstance(actual, list):
+        return len(actual) == len(expected) and all(
+            _strict_json_equal(a, e) for a, e in zip(actual, expected, strict=True)
+        )
+    return actual == expected
+
+
+def _affirmative_contains(text: str, needle: str, *, case_sensitive: bool = False) -> bool:
+    """Return True if needle appears affirmatively (not immediately negated) in text."""
+    flags = 0 if case_sensitive else re.IGNORECASE
+    pattern = re.compile(
+        rf"(?<!\w){re.escape(needle)}(?!\w)" if needle.isalnum() else re.escape(needle), flags
+    )
+    for m in pattern.finditer(text):
+        prefix = text[max(0, m.start() - 32) : m.start()]
+        if not _NEGATION_PREFIX_RE.search(prefix):
+            return True
+    return False
+
+
 def grade_response(case: BenchmarkCase, response: str, *, hit_token_limit: bool) -> bool:
     """Deterministically grade a model response against a BenchmarkCase."""
     if case.grader == "exact_json":
@@ -142,7 +179,9 @@ def grade_response(case: BenchmarkCase, response: str, *, hit_token_limit: bool)
             return False
         if not isinstance(parsed, dict) or not isinstance(case.expected, dict):
             return False
-        return all(parsed.get(k) == v for k, v in case.expected.items())
+        return all(
+            k in parsed and _strict_json_equal(parsed[k], v) for k, v in case.expected.items()
+        )
 
     if case.grader == "json_keys":
         try:
@@ -156,10 +195,19 @@ def grade_response(case: BenchmarkCase, response: str, *, hit_token_limit: bool)
 
     if case.grader == "numeric":
         target = str(case.expected).strip()
-        return bool(re.search(rf"(?<!\d){re.escape(target)}(?!\d)", response.strip()))
+        nums = _NUMERIC_TOKEN_RE.findall(response.strip())
+        if not nums:
+            return False
+        return nums[-1] == target
 
     if case.grader == "contains":
-        return str(case.expected).strip().lower() in response.strip().lower()
+        if isinstance(case.expected, dict):
+            needle = str(case.expected["contains"]).strip()
+            case_sensitive = bool(case.expected.get("case_sensitive", False))
+        else:
+            needle = str(case.expected).strip()
+            case_sensitive = False
+        return _affirmative_contains(response.strip(), needle, case_sensitive=case_sensitive)
 
     if case.grader == "regex":
         return bool(re.search(str(case.expected), response.strip(), flags=re.IGNORECASE))
@@ -168,11 +216,14 @@ def grade_response(case: BenchmarkCase, response: str, *, hit_token_limit: bool)
         if hit_token_limit:
             return False
         if isinstance(case.expected, dict):
-            needle = str(case.expected["contains"]).lower()
+            needle = str(case.expected["contains"])
             max_words = int(case.expected.get("max_words", 25))
+            case_sensitive = bool(case.expected.get("case_sensitive", False))
             words = response.strip().split()
-            return (needle in response.strip().lower()) and (len(words) <= max_words)
-        return str(case.expected).lower() in response.strip().lower()
+            return _affirmative_contains(
+                response.strip(), needle, case_sensitive=case_sensitive
+            ) and (len(words) <= max_words)
+        return _affirmative_contains(response.strip(), str(case.expected), case_sensitive=False)
 
     raise ValueError(f"Unsupported grader type: {case.grader!r}")
 
@@ -424,7 +475,7 @@ def core_v1_suite() -> BenchmarkSuite:
             axis="instruction_discipline",
             prompt="Convert 'hello world' to uppercase. Reply in at most 4 words.",
             grader="concise_contains",
-            expected={"contains": "hello world", "max_words": 4},
+            expected={"contains": "HELLO WORLD", "max_words": 4, "case_sensitive": True},
             max_tokens=20,
         ),
         BenchmarkCase(
@@ -830,24 +881,37 @@ class BenchmarkLedger:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._io_lock = threading.Lock()
+        self.corrupted_line_count: int = 0
 
     def append(self, snapshot: BenchmarkSnapshot) -> None:
         line = json.dumps(snapshot.to_dict(), separators=(",", ":"), sort_keys=True)
-        with self.path.open("a", encoding="utf-8") as fh:
+        with self._io_lock, self.path.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
 
     def load_all(self, *, suite_digest: str | None = None) -> list[BenchmarkSnapshot]:
         if not self.path.exists():
             return []
         out: list[BenchmarkSnapshot] = []
-        with self.path.open("r", encoding="utf-8") as fh:
-            for raw in fh:
+        corrupted = 0
+        with self._io_lock, self.path.open("r", encoding="utf-8") as fh:
+            for lineno, raw in enumerate(fh, start=1):
                 raw = raw.strip()
                 if not raw:
                     continue
-                snap = BenchmarkSnapshot.from_dict(json.loads(raw))
+                try:
+                    snap = BenchmarkSnapshot.from_dict(json.loads(raw))
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                    corrupted += 1
+                    warnings.warn(
+                        f"Skipping corrupted benchmark ledger line {lineno} in {self.path}: {exc}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    continue
                 if suite_digest is None or snap.suite_digest == suite_digest:
                     out.append(snap)
+        self.corrupted_line_count = corrupted
         return out
 
 
@@ -866,16 +930,24 @@ class GrowthDelta:
     unit_count_delta: int
     unit_bytes_delta: int
     latency_ms_delta: float
+    regressed_anchor_axes: tuple[str, ...] = ()
+
+    @property
+    def ci_passed(self) -> bool:
+        """True only when suite digests match AND no pooled or individual anchor axis regressed."""
+        return self.suite_digest_match and not self.anchor_regressed
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "baseline_label": self.baseline_label,
             "current_label": self.current_label,
             "suite_digest_match": self.suite_digest_match,
+            "ci_passed": self.ci_passed,
             "overall_delta": round(self.overall_delta, 6),
             "macro_axis_delta": round(self.macro_axis_delta, 6),
             "anchor_delta": round(self.anchor_delta, 6),
             "anchor_regressed": self.anchor_regressed,
+            "regressed_anchor_axes": list(self.regressed_anchor_axes),
             "axis_deltas": {k: round(v, 6) for k, v in self.axis_deltas.items()},
             "unit_count_delta": self.unit_count_delta,
             "unit_bytes_delta": self.unit_bytes_delta,
@@ -888,8 +960,9 @@ def compare_snapshots(
     current: BenchmarkSnapshot,
     *,
     anchor_regression_tolerance: float = 0.02,
+    anchor_axes: frozenset[str] = LOCKED_ANCHOR_AXES,
 ) -> GrowthDelta:
-    """Compute exact functional growth & anchor non-regression deltas between two snapshots."""
+    """Compute exact functional growth & per-axis anchor non-regression deltas."""
     axes = list(baseline.axis_summaries.keys())
     for ax in current.axis_summaries:
         if ax not in axes:
@@ -901,15 +974,20 @@ def compare_snapshots(
         c_rate = current.axis_summaries[ax].pass_rate if ax in current.axis_summaries else 0.0
         axis_deltas[ax] = c_rate - b_rate
 
+    regressed_axes = tuple(
+        ax for ax in axes if ax in anchor_axes and axis_deltas[ax] < -anchor_regression_tolerance
+    )
     anchor_delta = current.anchor_pass_rate - baseline.anchor_pass_rate
+    suite_match = baseline.suite_digest == current.suite_digest
     return GrowthDelta(
         baseline_label=baseline.label,
         current_label=current.label,
-        suite_digest_match=(baseline.suite_digest == current.suite_digest),
+        suite_digest_match=suite_match,
         overall_delta=current.overall_pass_rate - baseline.overall_pass_rate,
         macro_axis_delta=current.macro_axis_pass_rate - baseline.macro_axis_pass_rate,
         anchor_delta=anchor_delta,
-        anchor_regressed=(anchor_delta < -anchor_regression_tolerance),
+        anchor_regressed=(anchor_delta < -anchor_regression_tolerance) or bool(regressed_axes),
+        regressed_anchor_axes=regressed_axes,
         axis_deltas=axis_deltas,
         unit_count_delta=len(current.active_units) - len(baseline.active_units),
         unit_bytes_delta=current.total_unit_bytes - baseline.total_unit_bytes,
@@ -931,6 +1009,14 @@ def render_markdown_report(snapshots: list[BenchmarkSnapshot]) -> str:
             if ax not in axes:
                 axes.append(ax)
 
+    if not delta.suite_digest_match:
+        anchor_verdict = "INVALID (SUITE DIGEST MISMATCH)"
+    elif delta.anchor_regressed:
+        reg_str = ", ".join(delta.regressed_anchor_axes) or "pooled"
+        anchor_verdict = f"REGRESSED ({reg_str})"
+    else:
+        anchor_verdict = "PRESERVED"
+
     lines: list[str] = [
         "# SUBCOR Functional Growth Report",
         "",
@@ -941,7 +1027,7 @@ def render_markdown_report(snapshots: list[BenchmarkSnapshot]) -> str:
         f"- **Net Overall Growth:** `{first.overall_pass_rate * 100:.1f}% → {latest.overall_pass_rate * 100:.1f}%` "
         f"(`{delta.overall_delta * 100:+.1f} pp`)",
         f"- **Locked Anchor Retention:** `{first.anchor_pass_rate * 100:.1f}% → {latest.anchor_pass_rate * 100:.1f}%` "
-        f"({'REGRESSED' if delta.anchor_regressed else 'PRESERVED'})",
+        f"({anchor_verdict})",
         f"- **Active Skill Footprint:** {len(latest.active_units)} units, "
         f"{latest.total_unit_bytes / 1024:.1f} KiB "
         f"({latest.mean_bits_per_weight:.4f} avg bits/weight)",

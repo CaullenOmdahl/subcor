@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import struct
+import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -255,12 +257,29 @@ class SkillUnitRegistry:
     def _skill_spec_path(self, unit_id: str) -> Path:
         return self._unit_dir(unit_id) / "skill_spec.json"
 
+    @staticmethod
+    def _atomic_write_text(path: Path, text: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_name, path)
+        except Exception:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+            raise
+
     def save_router_gate(self, gate: RouterGate) -> None:
         """Attach or update a persistent MoE RouterGate for an existing Skill Unit."""
         self.get_manifest(gate.unit_id)
-        self._router_gate_path(gate.unit_id).write_text(
+        self._atomic_write_text(
+            self._router_gate_path(gate.unit_id),
             json.dumps(gate.to_dict(), indent=2) + "\n",
-            encoding="utf-8",
         )
 
     def load_router_gate(self, unit_id: str) -> RouterGate | None:
@@ -273,9 +292,9 @@ class SkillUnitRegistry:
     def save_skill_spec(self, spec: SkillSpec) -> None:
         """Attach portable workflow source (`skill_spec.json`) for future base-kernel recompilation."""
         self.get_manifest(spec.unit_id)
-        self._skill_spec_path(spec.unit_id).write_text(
+        self._atomic_write_text(
+            self._skill_spec_path(spec.unit_id),
             json.dumps(spec.to_dict(), indent=2) + "\n",
-            encoding="utf-8",
         )
 
     def load_skill_spec(self, unit_id: str) -> SkillSpec | None:
@@ -286,11 +305,9 @@ class SkillUnitRegistry:
         return SkillSpec.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
     def _write_manifest(self, manifest: SkillUnitManifest) -> None:
-        path = self._manifest_path(manifest.unit_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        self._atomic_write_text(
+            self._manifest_path(manifest.unit_id),
             json.dumps(manifest.to_dict(), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
         )
 
     def propose(
@@ -390,6 +407,11 @@ class SkillUnitRegistry:
     ) -> SkillUnitManifest:
         """Evaluate locked conformance rules and transition DORMANT -> CONFORMANT on pass."""
         manifest = self.get_manifest(unit_id)
+        if manifest.state not in (UnitState.DORMANT, UnitState.CONFORMANT):
+            raise GovernanceError(
+                f"Cannot record conformance for Skill Unit '{unit_id}' in state "
+                f"'{manifest.state.value}'; only 'dormant' or 'conformant' units may be certified"
+            )
         # Verify integrity before certifying conformance.
         self.load_verified_deltas(unit_id)
 

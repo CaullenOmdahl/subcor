@@ -565,9 +565,17 @@ class MLXKernel:
         self._verified_unit_cache.pop(unit_id, None)
 
     def mount_unit(self, unit_id: str, registry: SkillUnitRegistry) -> None:
-        """Verify SHA-256 integrity and hot-swap a Skill Unit onto instrumented layers."""
-        for layer_name, adapter in self._load_cached_unit(unit_id, registry):
-            self.instrumented[layer_name].mount_adapter(adapter.name, adapter)
+        """Verify SHA-256 integrity and atomically hot-swap a Skill Unit onto instrumented layers."""
+        loaded = self._load_cached_unit(unit_id, registry)
+        mounted_layers: list[tuple[str, str]] = []
+        try:
+            for layer_name, adapter in loaded:
+                self.instrumented[layer_name].mount_adapter(adapter.name, adapter)
+                mounted_layers.append((layer_name, adapter.name))
+        except Exception:
+            for layer_name, adapter_name in reversed(mounted_layers):
+                self.instrumented[layer_name].unmount_adapter(adapter_name)
+            raise
 
     def unmount_unit(self, unit_id: str) -> None:
         """Atomically unmount all layer adapters belonging to unit_id."""
@@ -670,9 +678,11 @@ class MLXKernel:
         )
         decision = router.route(emb, top_k=top_k)
 
-        for uid in decision.selected_units:
-            self.mount_unit(uid, registry)
+        mounted_units: list[str] = []
         try:
+            for uid in decision.selected_units:
+                self.mount_unit(uid, registry)
+                mounted_units.append(uid)
             trace = self.generate_messages_with_trace(
                 messages,
                 tools=tools,
@@ -681,7 +691,7 @@ class MLXKernel:
                 capture_activations=capture_activations,
             )
         finally:
-            for uid in decision.selected_units:
+            for uid in reversed(mounted_units):
                 self.unmount_unit(uid)
 
         return trace, decision
@@ -716,13 +726,15 @@ class MLXKernel:
         formatted = self.format_messages(messages, tools=tools, enable_thinking=enable_thinking)
 
         def _gen() -> Iterator[StreamTokenEvent]:
-            for uid in decision.selected_units:
-                assert registry is not None
-                self.mount_unit(uid, registry)
+            mounted_units: list[str] = []
             try:
+                for uid in decision.selected_units:
+                    assert registry is not None
+                    self.mount_unit(uid, registry)
+                    mounted_units.append(uid)
                 yield from self.stream_formatted(formatted, max_tokens=max_tokens)
             finally:
-                for uid in decision.selected_units:
+                for uid in reversed(mounted_units):
                     self.unmount_unit(uid)
 
         return decision, _gen()
