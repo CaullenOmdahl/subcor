@@ -1,4 +1,4 @@
-"""Core domain types, lifecycle states, and error hierarchy for SLAINGI."""
+"""Core domain types, lifecycle states, and error hierarchy for SUBCOR."""
 
 from __future__ import annotations
 
@@ -8,19 +8,19 @@ from enum import StrEnum
 from typing import Any
 
 
-class SlaingiError(Exception):
-    """Base exception for all SLAINGI runtime errors."""
+class SubcorError(Exception):
+    """Base exception for all SUBCOR runtime errors."""
 
 
-class GovernanceError(SlaingiError):
+class GovernanceError(SubcorError):
     """Raised when a governance invariant (such as no self-approval) is violated."""
 
 
-class IntegrityError(SlaingiError):
+class IntegrityError(SubcorError):
     """Raised when content-addressed digest verification fails."""
 
 
-class VerificationError(SlaingiError):
+class VerificationError(SubcorError):
     """Raised when unverified data is submitted where verified evidence is required."""
 
 
@@ -196,7 +196,7 @@ class ConformanceReport:
 
 @dataclass(frozen=True)
 class SkillUnitManifest:
-    """Metadata manifest for a versioned, content-addressed SLAINGI Skill Unit."""
+    """Metadata manifest for a versioned, content-addressed SUBCOR Skill Unit."""
 
     unit_id: str
     version: str

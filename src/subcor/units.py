@@ -27,9 +27,10 @@ from typing import Any
 
 import numpy as np
 
-from slaingi.expansion import LowRankAdapter
-from slaingi.sub1bit import Sub1BitMatrix
-from slaingi.types import (
+from subcor.expansion import LowRankAdapter
+from subcor.router import RouterGate
+from subcor.sub1bit import Sub1BitMatrix
+from subcor.types import (
     AdaptationMode,
     ConformanceReport,
     DeltaEncoding,
@@ -39,7 +40,7 @@ from slaingi.types import (
     UnitState,
 )
 
-_UNIT_MAGIC = b"SLUN"
+_UNIT_MAGIC = b"SCUN"
 _UNIT_VERSION = 1
 _ENC_LOW_RANK_FP32 = 1
 _ENC_SUB1BIT = 2
@@ -245,7 +246,25 @@ class SkillUnitRegistry:
         return self._unit_dir(unit_id) / "manifest.json"
 
     def _payload_path(self, unit_id: str) -> Path:
-        return self._unit_dir(unit_id) / "payload.slun"
+        return self._unit_dir(unit_id) / "payload.scun"
+
+    def _router_gate_path(self, unit_id: str) -> Path:
+        return self._unit_dir(unit_id) / "router_gate.json"
+
+    def save_router_gate(self, gate: RouterGate) -> None:
+        """Attach or update a persistent MoE RouterGate for an existing Skill Unit."""
+        self.get_manifest(gate.unit_id)
+        self._router_gate_path(gate.unit_id).write_text(
+            json.dumps(gate.to_dict(), indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def load_router_gate(self, unit_id: str) -> RouterGate | None:
+        """Load the persistent MoE RouterGate for a Skill Unit, if present."""
+        path = self._router_gate_path(unit_id)
+        if not path.exists():
+            return None
+        return RouterGate.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
     def _write_manifest(self, manifest: SkillUnitManifest) -> None:
         path = self._manifest_path(manifest.unit_id)
@@ -466,12 +485,21 @@ class SkillUnitRegistry:
         (out_dir / "conformance").mkdir(exist_ok=True)
 
         payload_src = self._payload_path(unit_id)
-        payload_dst = out_dir / "weights.slun"
+        payload_dst = out_dir / "weights.scun"
         payload_dst.write_bytes(payload_src.read_bytes())
+
+        gate = self.load_router_gate(unit_id)
+        router_gate_file: str | None = None
+        if gate is not None:
+            router_gate_file = "router_gate.json"
+            (out_dir / router_gate_file).write_text(
+                json.dumps(gate.to_dict(), indent=2) + "\n",
+                encoding="utf-8",
+            )
 
         capheos_manifest: dict[str, Any] = {
             "format": 2,
-            "id": f"slaingi-{manifest.unit_id}",
+            "id": f"subcor-{manifest.unit_id}",
             "version": manifest.version,
             "kind": "capability",
             "title": manifest.title,
@@ -485,17 +513,18 @@ class SkillUnitRegistry:
             "capabilities": {
                 "network": [],
                 "fs": {
-                    "read": [f"company/work/units/slaingi-{manifest.unit_id}/**"],
+                    "read": [f"company/work/units/subcor-{manifest.unit_id}/**"],
                     "write": [],
                 },
                 "secrets": [],
                 "subprocess": False,
             },
-            "slaingi": {
+            "subcor": {
                 "mode": manifest.mode.value,
                 "encoding": manifest.encoding.value,
                 "targetLayers": list(manifest.target_layers),
-                "payloadFile": "weights.slun",
+                "payloadFile": "weights.scun",
+                "routerGateFile": router_gate_file,
                 "payloadSha256": manifest.payload_sha256,
                 "payloadBytes": manifest.payload_bytes,
                 "effectiveBitsPerWeight": round(manifest.effective_bits_per_weight, 4),
@@ -520,19 +549,19 @@ import { fileURLToPath } from 'node:url';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const manifest = JSON.parse(readFileSync(join(root, 'module.json'), 'utf8'));
-const payload = readFileSync(join(root, manifest.slaingi.payloadFile));
+const payload = readFileSync(join(root, manifest.subcor.payloadFile));
 const actualSha = createHash('sha256').update(payload).digest('hex');
 
 if (manifest.format !== 2) {
   throw new Error(`Expected CaPheOS unit format 2, got ${manifest.format}`);
 }
-if (actualSha !== manifest.slaingi.payloadSha256) {
-  throw new Error(`Payload SHA-256 mismatch: expected ${manifest.slaingi.payloadSha256}, got ${actualSha}`);
+if (actualSha !== manifest.subcor.payloadSha256) {
+  throw new Error(`Payload SHA-256 mismatch: expected ${manifest.subcor.payloadSha256}, got ${actualSha}`);
 }
-if (!manifest.slaingi.conformance || manifest.slaingi.conformance.passed !== true) {
-  throw new Error('Exported SLAINGI unit must carry a passing conformance report');
+if (!manifest.subcor.conformance || manifest.subcor.conformance.passed !== true) {
+  throw new Error('Exported SUBCOR unit must carry a passing conformance report');
 }
-console.log(`PASS ${manifest.id}@${manifest.version} sha256=${actualSha.slice(0, 12)} bpw=${manifest.slaingi.effectiveBitsPerWeight}`);
+console.log(`PASS ${manifest.id}@${manifest.version} sha256=${actualSha.slice(0, 12)} bpw=${manifest.subcor.effectiveBitsPerWeight}`);
 """
         (out_dir / "conformance" / "test.js").write_text(test_js, encoding="utf-8")
         return out_dir

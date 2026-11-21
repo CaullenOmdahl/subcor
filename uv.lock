@@ -615,7 +615,7 @@ wheels = [
 ]
 
 [[package]]
-name = "slaingi"
+name = "subcor"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

@@ -5,8 +5,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from slaingi.proving_ground import run_proving_ground
-from slaingi.types import UnitState
+from subcor.proving_ground import run_proving_ground
+from subcor.types import UnitState
 
 
 def test_proving_ground_end_to_end(tmp_path: Path) -> None:

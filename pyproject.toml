@@ -3,9 +3,9 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
-name = "slaingi"
+name = "subcor"
 version = "0.1.0"
-description = "Self-Learning AI General Intelligence — governed weight-space surgery, dynamic low-rank expansion, and sub-1-bit skill units over frozen quantized models."
+description = "Sub-Bit Unit-Based Continual On-Policy Runtime — governed weight-space surgery, dynamic low-rank expansion, and sub-1-bit skill units over frozen quantized models."
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 license = { text = "AGPL-3.0-or-later" }
@@ -27,10 +27,10 @@ mlx = [
 ]
 
 [project.scripts]
-slaingi = "slaingi.cli:main"
+subcor = "subcor.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/slaingi"]
+packages = ["src/subcor"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

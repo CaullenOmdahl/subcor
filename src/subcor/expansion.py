@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from slaingi.sub1bit import Sub1BitMatrix, _pack_pm1, factorize_sub1bit
+from subcor.sub1bit import Sub1BitMatrix, _pack_pm1, factorize_sub1bit
 
 
 def _sign_pm1(arr: np.ndarray) -> np.ndarray:

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from slaingi.types import TrajectoryRecord, VerificationError
+from subcor.types import TrajectoryRecord, VerificationError
 
 
 class TrajectoryStore:
