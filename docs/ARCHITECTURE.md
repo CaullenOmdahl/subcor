@@ -80,6 +80,18 @@ CONFORMANT | ENABLED ──(export)────────► CaPheOS module.js
   4. **Atomic rollback:** Rolling back an `ENABLED` unit immediately marks it `ROLLED_BACK` and removes its delta from the active stack without touching the frozen base or unrelated units.
   5. **Parameterization rule on export:** Exported CaPheOS bundles strip company-specific transcripts and secrets, exporting only portable weights, manifest, declared capabilities, and conformance test metadata.
 
+### 2.6 Apple Silicon Frozen Kernel & Live Intern Loop (`MLXKernel`, `TextTrajectoryStore`)
+- **Actor:** Intern seat running a compact quantized open-weight LLM (default `mlx-community/Qwen3.5-0.8B-4bit`, 652 MB, or any `mlx-lm` checkpoint such as Gemma 4 E2B QAT).
+- **Object:** Frozen `nn.QuantizedLinear` projections wrapped in `SlaingiMLXLinear` + append-only `TextTrajectoryStore`.
+- **Trigger:** Live inference (`generate_with_trace`), zero-gradient contrastive weight-space surgery (`slaingi mlx-surgery`), or on-policy QLoRA distillation (`slaingi mlx-intern`).
+- **Observable contract:**
+  - Base quantized model parameters remain frozen (`model.freeze()`) at all times; adapters are hot-swapped via `mount_unit` / `unmount_unit` with SHA-256 verification.
+  - Live per-layer mean hidden-state activations are captured off-graph when `capture_activations=True` with zero overhead when disabled.
+  - Dynamic LoRA expansion (`attach_trainable_lora`) initializes `lora_b = 0` and verifies `max|logits_after - logits_before| == 0.0` before step 0.
+  - Hybrid models (such as Qwen3.5 GatedDeltaNet) switch cleanly to `model.train()` during adaptation so differentiable MLX ops run instead of inference-only Metal kernels, then return to `model.eval()` and `model.freeze()`.
+  - Promoted Skill Units export to **both** CaPheOS format-2 `module.json` bundles and stock `mlx-lm` `adapters.safetensors` + `adapter_config.json`.
+  - Unmounting a Skill Unit restores exact frozen base logits (`rollback_max_logit_diff == 0.0`).
+
 ---
 
 ## 3. Architecture Decision Records (ADRs)
@@ -100,3 +112,7 @@ CONFORMANT | ENABLED ──(export)────────► CaPheOS module.js
 ### ADR-004: Content-Addressed Skill Units Mapped 1:1 to CaPheOS Unit Standard
 - **Decision:** Every weight delta or adapter is packaged as a versioned unit with SHA-256 digest, lifecycle state, conformance report, and a direct exporter to CaPheOS `module.json` (format 2).
 - **Why:** Solves rollback, auditability, portability across companies/deployments, and reuse from day one.
+
+### ADR-005: Target Very Small, Capable Quantized Kernels First (0.6B–4B)
+- **Decision:** Default local target is `mlx-community/Qwen3.5-0.8B-4bit` (~652 MB on disk, <1.5 GB unified RAM), with first-class `--model` support for Gemma 4 E2B QAT and compact Qwen 3/3.5 checkpoints.
+- **Why:** Fast iteration cycles (<60s end-to-end on a 16 GB Apple Silicon laptop), low memory footprint alongside a running CaPheOS company, and high compression leverage when domain skills live in modular `< 0.05` bits/weight Skill Units rather than bloating a single monolithic checkpoint.

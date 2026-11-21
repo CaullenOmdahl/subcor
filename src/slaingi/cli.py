@@ -68,6 +68,123 @@ def _print_report(report: ProvingGroundReport) -> None:
     print("=========================================================================")
 
 
+def _run_mlx_intern_cli(args: argparse.Namespace) -> int:
+    try:
+        from slaingi.live_loop import run_live_intern_distillation
+    except ImportError as exc:
+        raise SystemExit(
+            "MLX extra is required for 'slaingi mlx-intern'. "
+            "Run with: uv run --extra mlx slaingi mlx-intern"
+        ) from exc
+
+    def execute(work_dir: Path) -> None:
+        report = run_live_intern_distillation(
+            work_dir,
+            model_id=args.model,
+            rank=args.rank,
+            steps=args.steps,
+            lr=args.lr,
+            sub1bit_rank=args.sub1bit_rank,
+            export_capheos_dir=args.export_capheos,
+            export_safetensors_dir=args.export_safetensors,
+            seed=args.seed,
+        )
+        print("=========================================================================")
+        print(f" SLAINGI — Live Apple Silicon MLX Intern Report ({report.model_id})")
+        print("=========================================================================")
+        print(f"Target Layers      : {', '.join(report.target_layers)}")
+        print(f"Verified Gate      : filtered {report.unverified_filtered_count} unverified traces")
+        print(
+            f"Zero-Perturbation  : max|logits_after - logits_before| = "
+            f"{report.zero_perturbation_max_logit_diff:.1e}"
+        )
+        print(f"QLoRA Loss Curve   : {report.initial_loss:.4f} -> {report.final_loss:.4f}")
+        print(
+            f"Skill Unit         : {report.unit.unit_id}@{report.unit.version} "
+            f"state={report.unit.state.value} "
+            f"({report.unit.effective_bits_per_weight:.4f} bits/weight, "
+            f"{report.unit.payload_bytes / 1024:.1f} KiB, "
+            f"sha256={report.unit.payload_sha256[:12]})"
+        )
+        print("\nHeld-Out Metrics:")
+        print(
+            f"  Baseline Frozen  : Ops Router={report.baseline_ops_acc * 100:5.1f}%  "
+            f"General QA={report.baseline_general_acc * 100:5.1f}%"
+        )
+        print(
+            f"  Sub-1-Bit Unit   : Ops Router={report.sub1bit_ops_acc * 100:5.1f}%  "
+            f"General QA={report.sub1bit_general_acc * 100:5.1f}%"
+        )
+        print(
+            f"  After Rollback   : Ops Router={report.rollback_ops_acc * 100:5.1f}%  "
+            f"General QA={report.rollback_general_acc * 100:5.1f}%  "
+            f"(max_logit_diff={report.rollback_max_logit_diff:.1e})"
+        )
+        print(f"\nGovernance         : self_approval_blocked={report.self_approval_blocked}")
+        if report.unit.conformance is not None:
+            print(f"Conformance Gate   : {report.unit.conformance.reason}")
+        if report.exported_capheos_dir is not None:
+            print(f"CaPheOS Export     : {report.exported_capheos_dir}")
+        if report.exported_safetensors_dir is not None:
+            print(f"MLX LoRA Export    : {report.exported_safetensors_dir}")
+        print("=========================================================================")
+
+    if args.work_dir is None:
+        with tempfile.TemporaryDirectory(prefix="slaingi-mlx-intern-") as tmp:
+            execute(Path(tmp))
+    else:
+        execute(args.work_dir)
+    return 0
+
+
+def _run_mlx_surgery_cli(args: argparse.Namespace) -> int:
+    try:
+        from slaingi.live_loop import run_live_weight_surgery
+    except ImportError as exc:
+        raise SystemExit(
+            "MLX extra is required for 'slaingi mlx-surgery'. "
+            "Run with: uv run --extra mlx slaingi mlx-surgery"
+        ) from exc
+
+    def execute(work_dir: Path) -> None:
+        report = run_live_weight_surgery(
+            work_dir,
+            model_id=args.model,
+            max_tokens=args.max_tokens,
+        )
+        print("=========================================================================")
+        print(f" SLAINGI — Live Zero-Gradient Weight-Space Surgery ({report.model_id})")
+        print("=========================================================================")
+        print("Contrastive Layer Ranking (zero gradient descent):")
+        for name, score in report.ranked_layers:
+            marker = " <-- peak" if name == report.selected_layer else ""
+            print(f"  {name:<26} separation={score:.4f}{marker}")
+        print(
+            f"\nBest Calibration   : layer={report.selected_layer} alpha={report.selected_alpha:.2f}"
+        )
+        print(
+            f"Token-Limit Rate   : {report.baseline_limit_rate * 100:5.1f}% -> "
+            f"{report.patched_limit_rate * 100:5.1f}% "
+            f"(avg tokens {report.baseline_mean_tokens:.1f} -> {report.patched_mean_tokens:.1f})"
+        )
+        print(
+            f"Skill Unit         : {report.unit.unit_id}@{report.unit.version} "
+            f"state={report.unit.state.value} "
+            f"({report.unit.effective_bits_per_weight:.4f} bits/weight, "
+            f"{report.unit.payload_bytes / 1024:.1f} KiB)"
+        )
+        if report.unit.conformance is not None:
+            print(f"Conformance Gate   : {report.unit.conformance.reason}")
+        print("=========================================================================")
+
+    if args.work_dir is None:
+        with tempfile.TemporaryDirectory(prefix="slaingi-mlx-surgery-") as tmp:
+            execute(Path(tmp))
+    else:
+        execute(args.work_dir)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="slaingi",
@@ -92,6 +209,38 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional directory to export promoted Skill Units as CaPheOS format-2 module.json bundles.",
     )
     demo_cmd.add_argument("--seed", type=int, default=42, help="Deterministic RNG seed.")
+
+    mlx_intern_cmd = sub.add_parser(
+        "mlx-intern",
+        help="Run the live Apple Silicon MLX On-Policy Intern distillation + Sub-1-Bit Unit cycle.",
+    )
+    mlx_intern_cmd.add_argument(
+        "--model",
+        type=str,
+        default="mlx-community/Qwen3.5-0.8B-4bit",
+        help="Compact Hugging Face MLX model ID.",
+    )
+    mlx_intern_cmd.add_argument("--work-dir", type=Path, default=None)
+    mlx_intern_cmd.add_argument("--rank", type=int, default=8)
+    mlx_intern_cmd.add_argument("--sub1bit-rank", type=int, default=8)
+    mlx_intern_cmd.add_argument("--steps", type=int, default=108)
+    mlx_intern_cmd.add_argument("--lr", type=float, default=3e-4)
+    mlx_intern_cmd.add_argument("--seed", type=int, default=42)
+    mlx_intern_cmd.add_argument("--export-capheos", type=Path, default=None)
+    mlx_intern_cmd.add_argument("--export-safetensors", type=Path, default=None)
+
+    mlx_surgery_cmd = sub.add_parser(
+        "mlx-surgery",
+        help="Run live zero-gradient contrastive weight-space diagnosis & ablation on an MLX model.",
+    )
+    mlx_surgery_cmd.add_argument(
+        "--model",
+        type=str,
+        default="mlx-community/Qwen3.5-0.8B-4bit",
+        help="Compact Hugging Face MLX model ID.",
+    )
+    mlx_surgery_cmd.add_argument("--work-dir", type=Path, default=None)
+    mlx_surgery_cmd.add_argument("--max-tokens", type=int, default=160)
 
     inspect_cmd = sub.add_parser(
         "inspect",
@@ -125,6 +274,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         _print_report(report)
         return 0
+
+    if args.command == "mlx-intern":
+        return _run_mlx_intern_cli(args)
+
+    if args.command == "mlx-surgery":
+        return _run_mlx_surgery_cli(args)
 
     if args.command == "inspect":
         registry = SkillUnitRegistry(args.units_dir)

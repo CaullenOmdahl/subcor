@@ -26,10 +26,10 @@ Build and verify the full mathematical and governance loop with zero external ru
 
 Connect the frozen-kernel + hot-swappable adapter runtime to real compact QAT open-weight models on 16 GB Apple Silicon (M5):
 
-- Local backend interface (`InferenceBackend`) with implementations for `mlx-lm` (Gemma 4 E2B/E4B QAT, Qwen3.5-0.8B/4B) and `llama-server` LoRA hot-swap API.
-- Real hidden-state activation hook capture during generation for contrastive loop detection.
-- Export SLAINGI low-rank deltas directly to `safetensors` / GGUF LoRA adapter files loadable by `mlx-lm` and `llama.cpp`.
-- Real reproduction of MIT Experiment 8-style structural loop ablation on a local 0.8B–4B checkpoint.
+- [x] Apple Silicon MLX frozen-kernel backend (`slaingi.backends.mlx_kernel.MLXKernel`) defaulting to compact 4-bit `mlx-community/Qwen3.5-0.8B-4bit` (652 MB) with `--model` support for Gemma 4 E2B QAT and any `mlx-lm` checkpoint.
+- [x] `SlaingiMLXLinear` wrapper capturing live per-layer hidden-state activations and mounting/unmounting multi-unit Sub-1-Bit & FP32 Skill Units without mutating `QuantizedLinear` base weights.
+- [x] Export SLAINGI Skill Units directly to stock `mlx-lm` `adapters.safetensors` + `adapter_config.json` alongside CaPheOS format-2 `module.json`.
+- [x] Live zero-gradient contrastive weight-space diagnosis & ablation CLI (`slaingi mlx-surgery`).
 
 **Exit Gate:** Live local quantized model serves tasks, captures activation traces, applies a hot-swapped adapter/patch without mutating the base checkpoint, and rolls back cleanly within 16 GB unified memory.
 
@@ -39,11 +39,11 @@ Connect the frozen-kernel + hot-swappable adapter runtime to real compact QAT op
 
 Turn senior-seat review transcripts into scheduled overnight adapter growth:
 
-- Ingest `(intern_attempt, senior_correction, verified_outcome)` triples from real run journals.
-- Automatic failure clustering: route structural repetition/formatting defects to `WeightSpaceSurgeon` and capability gaps to QLoRA / STE `ElasticLinear` expansion.
-- Automated held-out regression suite runner with strict budget and compute caps.
+- [x] Text-level append-only `TextTrajectoryStore` (`slaingi.intern`) enforcing the Verified Evidence Gate on live LLM `(prompt, intern_response, senior_correction)` triples.
+- [x] Function-preserving Apple Silicon GPU QLoRA adaptation (`MLXKernel.train_qlora_adapters`, verified `0.0` initial logit perturbation) + Sub-1-Bit binary compression (`< 0.05` bits/weight) + locked conformance gate (`slaingi mlx-intern`).
+- [ ] Scheduled overnight cron/dispatcher runner with automated failure clustering (routing structural loop defects to `WeightSpaceSurgeon` vs. capability gaps to QLoRA expansion).
 
-**Exit Gate:** Local Intern model demonstrably improves pass rate on a held-out benchmark of real company/coding tasks across two overnight cycles with zero baseline regression.
+**Exit Gate:** Local Intern model demonstrably improves pass rate on a held-out benchmark of real company/coding tasks across overnight cycles with preserved baseline capabilities.
 
 ---
 

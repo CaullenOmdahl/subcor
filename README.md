@@ -43,31 +43,42 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the complete specification,
 
 Requires Python 3.12 or 3.13 and [`uv`](https://docs.astral.sh/uv/).
 
+### Core Proving Ground (CPU, NumPy-only, ~1s)
+
 ```bash
 uv sync --extra dev
 uv run pytest
-uv run slaingi demo
+uv run slaingi demo --export-capheos ./out/capheos-units
 ```
 
-To export a passing Skill Unit as a CaPheOS-compatible unit bundle:
+### Live Apple Silicon MLX Kernel (Compact 0.8B 4-bit Model)
+
+Targets compact, capable local models (defaults to `mlx-community/Qwen3.5-0.8B-4bit`, ~652 MB, with `--model` support for Gemma 4 E2B QAT or any `mlx-lm` checkpoint):
 
 ```bash
-uv run slaingi demo --export-capheos ./out/capheos-units
+uv sync --extra dev --extra mlx
+
+# Live On-Policy Intern distillation -> Sub-1-Bit Skill Unit (< 0.05 bits/weight)
+# + locked conformance gate + CaPheOS & mlx-lm safetensors export + rollback proof
+uv run --extra mlx slaingi mlx-intern \
+  --export-capheos ./out/capheos-units \
+  --export-safetensors ./out/mlx-lora
+
+# Live zero-gradient contrastive activation diagnosis & rank-1 ablation
+uv run --extra mlx slaingi mlx-surgery
 ```
 
 ---
 
-## Honest Scope & Current Status (Milestone 1)
+## Honest Scope & Current Status (Milestones 1–3)
 
 What is **working and verified today**:
-- Append-only JSONL telemetry store enforcing the **Verified Evidence Gate**.
-- Real **Sub-1-Bit Binary Low-Rank Factorization** with `packbits` storage, exact unpack/reconstruct, and measured `< 1.0` bits/weight compression.
-- **Function-Preserving Dynamic Low-Rank Expansion** ($r \to r + k$, exact zero-perturbation initialization) with FP32 and binary Straight-Through Estimator (STE) micro-batch adaptation over a frozen base matrix.
-- **Contrastive Weight-Space Surgeon** that isolates hidden-layer failure/looping directions from activation traces and synthesizes zero-gradient rank-$k$ patches.
-- **Governed Skill Unit Registry** enforcing content-addressed SHA-256 verification, immutable conformance gating, no self-approval (`proposer != approver`), atomic rollback, and CaPheOS `module.json` (format 2) export.
-- End-to-end **Micro-Intern Proving Ground** demonstrating both zero-gradient loop ablation and dynamic sub-1-bit skill growth with governance enforcement.
+- Append-only JSONL telemetry stores (`TrajectoryStore` & `TextTrajectoryStore`) enforcing the **Verified Evidence Gate**.
+- Real **Sub-1-Bit Binary Low-Rank Factorization** with `packbits` storage, exact unpack/reconstruct, and measured `< 1.0` bits/weight compression (`~0.03` bits/weight on real `1024 x 3584` transformer MLP projections).
+- **Function-Preserving Dynamic Low-Rank Expansion** ($r \to r + k$, exact `0.0` initial output/logit perturbation) with FP32, Binary STE (QAT), and live Apple Silicon MLX GPU QLoRA adaptation over frozen quantized base weights.
+- **Contrastive Weight-Space Surgeon** that isolates hidden-layer failure directions from activation traces and synthesizes zero-gradient rank-$k$ ablation patches.
+- **Governed Skill Unit Registry** enforcing content-addressed SHA-256 verification, immutable conformance gating, no self-approval (`proposer != approver`), atomic rollback, **CaPheOS `module.json` (format 2)** export (with runnable Node `conformance/test.js`), and stock **`mlx-lm` `adapters.safetensors`** export.
+- End-to-end **Micro-Intern Proving Ground** (`slaingi demo`) and live **Apple Silicon MLX Intern + Surgery** runners (`slaingi mlx-intern`, `slaingi mlx-surgery`) verified on `mlx-community/Qwen3.5-0.8B-4bit`.
 
-What is **not built yet** (tracked in [docs/ROADMAP.md](docs/ROADMAP.md)):
-- Live Apple Silicon (`mlx-lm`) / `llama.cpp` inference server adapter for Gemma 4 QAT / Qwen 3.5 checkpoints (Milestone 2).
-- Overnight scheduled on-policy distillation from senior agent transcripts (Milestone 3).
-- Direct CaPheOS runtime mount & live company proving ground (Milestone 4).
+What is **next** (tracked in [docs/ROADMAP.md](docs/ROADMAP.md)):
+- Scheduled overnight failure-clustering daemon & live CaPheOS container integration (Milestone 4).

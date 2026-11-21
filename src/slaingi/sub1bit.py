@@ -183,6 +183,35 @@ class Sub1BitMatrix:
         )
 
 
+def _leading_singular_vectors(
+    mat: np.ndarray, *, power_iters: int = 12, eps: float = 1e-12
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute leading singular pair (u, v) via power iteration for large matrices."""
+    d_out, d_in = mat.shape
+    if min(d_out, d_in) <= 96:
+        u_svd, _, vt_svd = np.linalg.svd(mat, full_matrices=False)
+        return u_svd[:, 0], vt_svd[0, :]
+
+    # Deterministic power iteration avoids O(min(m, n)^2 * max(m, n)) full SVD cost.
+    v = np.mean(mat, axis=0)
+    v_norm = float(np.linalg.norm(v))
+    v = np.ones(d_in, dtype=np.float64) / math.sqrt(d_in) if v_norm < eps else v / v_norm
+
+    u = np.ones(d_out, dtype=np.float64) / math.sqrt(d_out)
+    for _ in range(power_iters):
+        u_next = mat @ v
+        u_norm = float(np.linalg.norm(u_next))
+        if u_norm < eps:
+            break
+        u = u_next / u_norm
+        v_next = mat.T @ u
+        v_norm = float(np.linalg.norm(v_next))
+        if v_norm < eps:
+            break
+        v = v_next / v_norm
+    return u, v
+
+
 def _best_binary_rank1(
     residual: np.ndarray, *, sign_iters: int = 8
 ) -> tuple[np.ndarray, np.ndarray, float]:
@@ -193,9 +222,9 @@ def _best_binary_rank1(
         return np.ones(d_out, dtype=np.float64), np.ones(d_in, dtype=np.float64), 0.0
 
     # Initialize from leading singular vectors of the residual.
-    u_svd, _, vt_svd = np.linalg.svd(residual, full_matrices=False)
-    u = _sign_pm1(u_svd[:, 0])
-    v = _sign_pm1(vt_svd[0, :])
+    u_lead, v_lead = _leading_singular_vectors(residual)
+    u = _sign_pm1(u_lead)
+    v = _sign_pm1(v_lead)
 
     # Alternating maximization of u^T R v over {-1, +1} monotonically increases objective.
     for _ in range(sign_iters):
