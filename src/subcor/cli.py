@@ -328,6 +328,34 @@ def _run_bench_cli(args: argparse.Namespace) -> int:
         )
         return 0
 
+    if args.bench_cmd == "baselines":
+        from subcor.baselines import (
+            compare_compression_at_equal_bytes,
+            run_mlx_baseline_comparison,
+            run_router_scale_sweep,
+        )
+
+        if args.live_mlx:
+            report = run_mlx_baseline_comparison(
+                model_id=args.model,
+                n_train=args.n_train,
+                n_test=args.n_test,
+                steps=args.steps,
+                seed=args.seed,
+            )
+        else:
+            report = {
+                "compression_matrix_audit": [
+                    r.to_dict() for r in compare_compression_at_equal_bytes(seed=args.seed)
+                ],
+                "router_scale_sweep": [r.to_dict() for r in run_router_scale_sweep(seed=args.seed)],
+            }
+        if args.out is not None:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(report, indent=2))
+        return 0
+
     ledger = BenchmarkLedger(args.ledger.expanduser().resolve())
 
     if args.bench_cmd == "run":
@@ -613,6 +641,22 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=Path.home() / ".local" / "share" / "subcor" / "benchmarks" / "history.jsonl",
     )
+
+    b_base = bench_sub.add_parser(
+        "baselines",
+        help="Run controlled same-byte-budget FP16 LoRA, few-shot, kNN, and router-scale baselines.",
+    )
+    b_base.add_argument(
+        "--live-mlx",
+        action="store_true",
+        help="Also run the 100-case held-out procedural workflow comparison on a live MLX model.",
+    )
+    b_base.add_argument("--model", type=str, default="mlx-community/Qwen3.5-0.8B-4bit")
+    b_base.add_argument("--n-train", type=int, default=20)
+    b_base.add_argument("--n-test", type=int, default=100)
+    b_base.add_argument("--steps", type=int, default=80)
+    b_base.add_argument("--seed", type=int, default=42)
+    b_base.add_argument("--out", type=Path, default=None)
 
     b_exp = bench_sub.add_parser(
         "export-suite",

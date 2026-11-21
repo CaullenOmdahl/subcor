@@ -198,6 +198,17 @@ Zero-perturbation expansion measured `max|y_after - y_before| = 0.0e+00`; `12` u
 - **Early-exit routing tap overhead:** **`18.3 ms/prompt`** (`layers.0..18`, bypassing layers `19..23` and the 248k-vocab `lm_head`).
 - **Speedup from native-dtype pre-scaled adapters + early-exit tap:** Two-expert routed short-turn throughput rose from `49.0 tok/s` (`261 ms/case`, eco mode) to **`86.5 tok/s` (`137 ms/case`, AC power)**.
 
+#### C. Controlled 100-Case Held-Out Baseline Comparison (`subcor bench baselines --live-mlx`)
+To test whether sub-1-bit Skill Units earn their complexity over simpler baselines on a strictly disjoint 100-case held-out procedural workflow suite (`n_train = 20`, `n_test = 100`, `Qwen3.5-0.8B-4bit`, `steps = 80`):
+- **Frozen Base (zero-shot):** `0.0%` (`67.7` prompt tokens, `298.5 ms`)
+- **5-Shot In-Context Prompting:** `49.0%` (`277.7` prompt tokens — **4.1× context cost**, `198.8 ms`)
+- **Same-Byte FP16 LoRA Rank-1 (`54.0 KiB`):** `53.0%` (`67.7` prompt tokens, `166.2 ms`)
+- **SUBCOR Sub-1-Bit Rank-8 (`81.4 KiB`):** **`79.0%`** (`67.7` prompt tokens, `162.7 ms` — **+30 pp over 5-shot**, **+26 pp over FP16 Rank-1**)
+- **FP16 LoRA Rank-2 (`108.0 KiB`, +33% bytes):** **`85.0%`** (`67.7` prompt tokens, `159.8 ms`)
+- **Frozen-Base Embedding kNN (`40 KiB`, fixed-label classification only):** `86.0%` (`26.6 ms`)
+
+On equal-byte matrix reconstruction of realistic decaying-spectrum rank-8 `1024 × 3584` deltas, `sub1bit_rank_8` (`13.5 KiB`, `0.5687` error) outperforms both `fp16_lora_rank_2` (`18.0 KiB`, `0.6242` error) and dense `BitDelta` (`448 KiB`, `0.6548` error). Yet on live end-to-end MLX generation, native rank-2 FP16 LoRA (`108 KiB`) exceeds post-hoc compressed Sub-1-Bit Rank-8 (`81.4 KiB`) by `+6 pp` (`85%` vs `79%`), confirming that **SUBCOR's primary contribution is the governed, routed, rollbackable Skill Unit runtime** with selectable compression encodings along the byte-vs-accuracy Pareto frontier. Across a 200-prompt isotropic OOD router sweep up to `20` installed skills, seat-scoped hierarchical routing reduces OOD false positives from `2.5%` (flat) to **`1.5%`** while holding `96.2%` exact skill accuracy.
+
 ### 5.3 Negative Findings & Governance Validations
 
 Reporting negative outcomes is central to evaluating self-modifying systems honestly:
