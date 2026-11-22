@@ -5,11 +5,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import tempfile
+import threading
 from pathlib import Path
 
 from subcor.proving_ground import EvalMetrics, ProvingGroundReport, run_proving_ground
 from subcor.units import SkillUnitRegistry
+
+_MLX_DEFAULT_MODEL = "mlx-community/Qwen3.5-0.8B-4bit"
 
 
 def _fmt_metrics(m: EvalMetrics) -> str:
@@ -252,7 +256,62 @@ def _run_mlx_moe_cli(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_lora_id_map(spec: str | None) -> dict[str, int]:
+    """Parse `--lora-id-map`: a JSON object or comma-separated `unit_id=lora_id` pairs."""
+    if not spec or not spec.strip():
+        return {}
+    text = spec.strip()
+    try:
+        if text.startswith("{"):
+            raw = json.loads(text)
+            if not isinstance(raw, dict):
+                raise ValueError("expected a JSON object")
+            items = list(raw.items())
+        else:
+            items = []
+            for part in text.split(","):
+                if not part.strip():
+                    continue
+                unit_id, sep, lora_id = part.partition("=")
+                if not sep or not unit_id.strip():
+                    raise ValueError(f"expected unit_id=lora_id, got {part.strip()!r}")
+                items.append((unit_id.strip(), lora_id.strip()))
+        out: dict[str, int] = {}
+        for unit_id, lora_id in items:
+            if isinstance(lora_id, bool):
+                raise ValueError(f"LoRA id for {unit_id!r} must be an integer")
+            lid = int(lora_id)
+            if lid < 0:
+                raise ValueError(f"LoRA id for {unit_id!r} must be >= 0")
+            out[str(unit_id)] = lid
+        return out
+    except (ValueError, TypeError) as exc:
+        raise SystemExit(f"Invalid --lora-id-map {spec!r}: {exc}") from exc
+
+
 def _run_serve_cli(args: argparse.Namespace) -> int:
+    """Run `subcor serve`. SIGTERM is turned into KeyboardInterrupt for the WHOLE run.
+
+    The handler is installed before a supervised llama-server is started, so a SIGTERM
+    while the model loads or TenantManager hydrates still stops llama-server.
+    """
+
+    def _on_sigterm(_signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    in_main = threading.current_thread() is threading.main_thread()
+    previous_sigterm = signal.signal(signal.SIGTERM, _on_sigterm) if in_main else None
+    try:
+        return _run_serve(args)
+    except KeyboardInterrupt:
+        print("\nInterrupted; SUBCOR server stopped.")
+        return 130
+    finally:
+        if in_main:
+            signal.signal(signal.SIGTERM, previous_sigterm)
+
+
+def _run_serve(args: argparse.Namespace) -> int:
     from subcor.auth import AuthPolicy
     from subcor.server import MLXServingAdapter, SubcorHTTPServer, TenantManager
 
@@ -278,11 +337,68 @@ def _run_serve_cli(args: argparse.Namespace) -> int:
         else (state_dir / "exports").resolve()
     )
     tenants = tuple(t.strip() for t in (args.tenants or []) if t.strip())
+    supervisor = None
     if args.backend == "llamacpp":
         from subcor.backends.llamacpp_kernel import LlamaCppServingAdapter
 
-        print(f"Connecting to llama-server backend at '{args.llamacpp_url}' ({args.model}) ...")
-        kernel = LlamaCppServingAdapter(base_url=args.llamacpp_url, model_id=args.model)
+        projections = (
+            tuple(p.strip() for p in args.projections.split(",") if p.strip())
+            if args.projections
+            else None
+        )
+        if args.gguf is not None:
+            from subcor.backends.llamacpp_supervisor import LlamaServerSupervisor
+
+            gguf_path = args.gguf.expanduser().absolute()
+            if not gguf_path.is_file():
+                raise SystemExit(f"--gguf file not found: {gguf_path}")
+            model_id = args.model if args.model != _MLX_DEFAULT_MODEL else gguf_path.stem
+            llama_dir = state_dir / "llamacpp"
+            supervisor = LlamaServerSupervisor(
+                base_gguf=gguf_path,
+                binary=args.llama_server_bin,
+                host="127.0.0.1",
+                port=args.llamacpp_port,
+                n_gpu_layers=args.n_gpu_layers,
+                ctx_size=args.ctx_size,
+                extra_args=tuple(args.llama_server_args or ()),
+                lora_dir=llama_dir / "loras",
+                log_path=llama_dir / "llama-server.log",
+            )
+            trainer_layers = (
+                [int(x) for x in args.trainer_layers.split(",") if x.strip()]
+                if args.trainer_layers
+                else None
+            )
+            kernel = LlamaCppServingAdapter(
+                model_id=model_id,
+                supervisor=supervisor,
+                lora_mode=args.lora_mode,
+                trainer_device=args.trainer_device,
+                trainer_dtype=args.trainer_dtype,
+                trainer_layer_indices=trainer_layers,
+                trainer_projections=projections,
+                unload_trainer_after_study=args.unload_trainer_after_study,
+            )
+            if args.lora_id_map:
+                raise SystemExit("--lora-id-map applies only to an external server (no --gguf)")
+            print(
+                f"Starting supervised llama-server for '{gguf_path.name}' on "
+                f"{supervisor.base_url} (-ngl {args.n_gpu_layers}, log {supervisor.log_path}) ..."
+            )
+            supervisor.start()
+        else:
+            print(f"Connecting to llama-server backend at '{args.llamacpp_url}' ({args.model}) ...")
+            print("  (inference only; pass --gguf to let SUBCOR train Skill Units)")
+            lora_id_map = _parse_lora_id_map(args.lora_id_map)
+            if lora_id_map:
+                print(f"  static LoRA ids: {lora_id_map}")
+            kernel = LlamaCppServingAdapter(
+                base_url=args.llamacpp_url,
+                model_id=args.model,
+                lora_mode=args.lora_mode,
+                lora_id_map=lora_id_map,
+            )
     else:
         projections = (
             tuple(p.strip() for p in args.projections.split(",") if p.strip())
@@ -296,31 +412,46 @@ def _run_serve_cli(args: argparse.Namespace) -> int:
             layer_preset=args.layer_preset,
             num_layers=args.num_layers,
         )
-    manager = TenantManager(state_dir=state_dir, kernel=kernel, initial_tenants=tenants)
-    server = SubcorHTTPServer(
-        (args.host, args.port),
-        manager=manager,
-        auth_policy=auth_policy,
-        export_root=export_root,
-    )
+    try:
+        manager = TenantManager(state_dir=state_dir, kernel=kernel, initial_tenants=tenants)
+        if supervisor is not None and not supervisor.is_running:
+            raise SystemExit(
+                "Supervised llama-server is not running after startup (it could not be "
+                f"restarted with the ENABLED adapters). See {supervisor.log_path}."
+            )
+        server = SubcorHTTPServer(
+            (args.host, args.port),
+            manager=manager,
+            auth_policy=auth_policy,
+            export_root=export_root,
+        )
+    except BaseException:
+        if supervisor is not None:
+            supervisor.stop()
+        raise
 
     print("=========================================================================")
     print(" SUBCOR — Multi-Tenant Server Ready")
     print("=========================================================================")
     print(f"Listen         : http://{args.host}:{args.port}")
     print(f"OpenAI BaseURL : http://{args.host}:{args.port}/v1")
-    print(f"Frozen Kernel  : {args.model}")
+    print(f"Frozen Kernel  : {kernel.model_id}")
+    if supervisor is not None:
+        print(f"llama-server   : {supervisor.base_url} (pid {supervisor.pid}, supervised)")
     print(f"State Dir      : {state_dir}")
     print(f"Export Root    : {export_root}")
     print(f"Auth           : {'Enabled' if auth_policy.enabled else 'DISABLED (loopback dev)'}")
     print(f"Tenants        : {', '.join(manager.list_tenants()) or '(auto-create on request)'}")
     print("=========================================================================")
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down SUBCOR server cleanly.")
     finally:
         server.server_close()
+        if supervisor is not None:
+            supervisor.stop()
     return 0
 
 
@@ -642,7 +773,93 @@ def main(argv: list[str] | None = None) -> int:
         "--llamacpp-url",
         type=str,
         default="http://127.0.0.1:8080",
-        help="Base URL of an external llama-server when --backend llamacpp is selected.",
+        help=(
+            "Base URL of an external llama-server when --backend llamacpp is selected without "
+            "--gguf (inference only; Study Cycles then fail)."
+        ),
+    )
+    serve_cmd.add_argument(
+        "--lora-id-map",
+        type=str,
+        default=None,
+        help=(
+            "External llama-server only (no --gguf): unit_id -> LoRA id of the adapters that "
+            "server was started with, as JSON ('{\"ops-v1\": 0}') or 'ops-v1=0,fin-v2=1'. "
+            "Routed units without an entry run on the base model (with a warning)."
+        ),
+    )
+    serve_cmd.add_argument(
+        "--gguf",
+        type=Path,
+        default=None,
+        help=(
+            "llamacpp backend: local base GGUF. SUBCOR then runs llama-server itself, trains "
+            "Skill Units on a PyTorch trainer loaded from the same GGUF, and loads them as "
+            "GGUF LoRA adapters."
+        ),
+    )
+    serve_cmd.add_argument(
+        "--llama-server-bin",
+        type=str,
+        default="llama-server",
+        help="llama-server executable used with --gguf (default: from PATH).",
+    )
+    serve_cmd.add_argument(
+        "--llamacpp-port",
+        type=int,
+        default=8091,
+        help="Loopback port for the supervised llama-server (with --gguf).",
+    )
+    serve_cmd.add_argument(
+        "--n-gpu-layers",
+        type=int,
+        default=99,
+        help="llama-server --n-gpu-layers for the supervised server (0 = CPU only).",
+    )
+    serve_cmd.add_argument(
+        "--ctx-size",
+        type=int,
+        default=8192,
+        help="llama-server --ctx-size for the supervised server.",
+    )
+    serve_cmd.add_argument(
+        "--llama-server-arg",
+        dest="llama_server_args",
+        action="append",
+        default=[],
+        help="Extra argument passed to the supervised llama-server (repeatable).",
+    )
+    serve_cmd.add_argument(
+        "--lora-mode",
+        choices=("auto", "request", "global"),
+        default="auto",
+        help=(
+            "How routed LoRAs are selected: per-request 'lora' field, or global "
+            "/lora-adapters. 'auto' = request when supervised, global for an external server."
+        ),
+    )
+    serve_cmd.add_argument(
+        "--trainer-device",
+        type=str,
+        default=None,
+        help="PyTorch device for the --gguf trainer (default: cuda if available, else cpu).",
+    )
+    serve_cmd.add_argument(
+        "--trainer-dtype",
+        choices=("float16", "bfloat16", "float32"),
+        default=None,
+        help="PyTorch dtype for the --gguf trainer (default: float16 on GPU, float32 on CPU).",
+    )
+    serve_cmd.add_argument(
+        "--trainer-layers",
+        type=str,
+        default=None,
+        help="Comma-separated layer indices to train (default: the last 6 layers of the GGUF).",
+    )
+    serve_cmd.add_argument(
+        "--unload-trainer-after-study",
+        action="store_true",
+        help="Free the trainer's GPU memory after every Study Cycle (slower, less VRAM).",
     )
     serve_cmd.add_argument(
         "--projections",

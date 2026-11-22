@@ -25,6 +25,32 @@ mlx = [
     "mlx>=0.24",
     "mlx-lm>=0.24",
 ]
+# Write Skill Units as GGUF LoRA adapters for llama.cpp (pure Python).
+gguf = [
+    "gguf>=0.17",
+]
+# AMD GPUs on Linux: PyTorch ROCm trainer + GGUF-backed training (see docs/AMD-GGUF.md).
+# Also runs on CPU.
+rocm = [
+    "torch>=2.14",
+    "triton-rocm>=3.8; sys_platform == 'linux'",
+    "transformers>=5.0",
+    "accelerate>=1.0",
+    "safetensors>=0.4",
+    "gguf>=0.17",
+]
+
+[tool.uv]
+conflicts = [[{ extra = "mlx" }, { extra = "rocm" }]]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-rocm", extra = "rocm" }]
+triton-rocm = [{ index = "pytorch-rocm", extra = "rocm" }]
+
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm7.2"
+explicit = true
 
 [project.scripts]
 subcor = "subcor.cli:main"
