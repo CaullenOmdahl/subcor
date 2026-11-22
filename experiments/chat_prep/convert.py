@@ -1,4 +1,4 @@
-"""Convert raw Claude Code and Codex transcripts into one canonical session format.
+"""Convert raw Claude Code, Codex and DeepSeek Harness transcripts into one canonical session format.
 
 Canonical session (one JSON file per session):
   {"session_id", "source", "project", "started_at",
@@ -13,7 +13,8 @@ builder cuts windows there. Thinking/reasoning blocks are dropped. Sidechain (su
 records are skipped.
 
 Usage: python convert.py <raw_root> <out_dir>
-  raw_root contains claude-borg/, claude-local/ (optional), codex-borg/
+  raw_root contains claude-borg/, claude-local/ (optional), codex-borg/, deepseek-local/ (optional,
+  a copy of ~/.dsh/sessions)
 """
 
 from __future__ import annotations
@@ -397,10 +398,131 @@ def convert_codex(path: Path) -> dict | None:
             "started_at": started, "events": events}
 
 
+# ---------------------------------------------------------------- DeepSeek Harness (dsh)
+
+_DSH_EXIT_RE = re.compile(r"\[exit code: (-?\d+)\]")
+_DSH_READ_RE = re.compile(r"\A<path>[^\n]*</path>\n<type>[^\n]*</type>\n<content>\n?(.*?)(?:\n?</content>)?\s*\Z", re.S)
+
+
+def _ms_iso(ms: Any) -> str | None:
+    import datetime as _dt
+    try:
+        return _dt.datetime.fromtimestamp(int(ms) / 1000, _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    except Exception:
+        return None
+
+
+def _map_dsh_tool(name: str, inp: dict) -> tuple[str, dict]:
+    if name == "bash":
+        if inp.get("run_in_background"):
+            return "UNSUPPORTED:bash-background", {}
+        return "run_command", {"command": inp.get("command", "")}
+    if name == "read":
+        a = {"path": inp.get("file_path", "")}
+        for k in ("offset", "limit"):
+            if k in inp:
+                a[k] = inp[k]
+        return "read_file", a
+    if name == "edit":
+        return "edit_file", {"path": inp.get("file_path", ""), "old_text": inp.get("old_string", ""),
+                             "new_text": inp.get("new_string", "")}
+    if name == "write":
+        return "write_file", {"path": inp.get("file_path", ""), "content": inp.get("content", "")}
+    if name in ("glob", "grep"):
+        a = {"pattern": inp.get("pattern", "")}
+        if inp.get("path"):
+            a["path"] = inp["path"]
+        return "search_files", a
+    if name == "web_search":
+        qs = inp.get("queries") or ([inp["query"]] if inp.get("query") else [])
+        return ("web_search", {"query": str(qs[0])}) if len(qs) == 1 else ("UNSUPPORTED:web_search-multi", {})
+    if name == "web_fetch":
+        return "web_fetch", {"url": inp.get("url", "")}
+    if name == "ask_user_question":
+        qs = inp.get("questions") or []
+        q = "\n".join(x.get("question", "") for x in qs if isinstance(x, dict)) or str(inp)
+        return "ask_user", {"question": q}
+    return f"UNSUPPORTED:{name}", {}
+
+
+def _dsh_output(name: str, content: Any, is_error: bool) -> tuple[str, bool]:
+    txt = _text_of(content)
+    if name == "read_file":
+        m = _DSH_READ_RE.match(txt)
+        if m:
+            txt = m.group(1)
+    m = _DSH_EXIT_RE.search(txt)
+    if m and m.group(1) != "0":
+        is_error = True
+    txt = _DSH_EXIT_RE.sub(lambda mm: f"[exit {mm.group(1)}]", txt)
+    return txt.strip(), bool(is_error or txt.startswith("Error:"))
+
+
+def convert_dsh(path: Path) -> dict | None:
+    stream = subprocess.Popen(["zstdcat", str(path)], stdout=subprocess.PIPE, text=True, errors="ignore").stdout
+    events: list[dict] = []
+    sid = project = started = None
+    names: dict[str, str] = {}
+    for line in stream:
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        t = r.get("type")
+        d = r.get("data") or {}
+        if t == "session":
+            if (r.get("delegationDepth") or 0) > 0:
+                return None  # subagent session: kept raw, not used (same policy as Claude sidechains)
+            sid, project, started = r.get("id"), r.get("cwd"), _ms_iso(r.get("createdAt"))
+        elif t == "user/message":
+            kind = (d.get("source") or {}).get("kind")
+            if kind == "compact-checkpoint":
+                events.append({"role": "break", "reason": "compaction"})
+                continue
+            if kind != "user":
+                continue
+            txt = _text_of(d.get("content")).strip()
+            if txt and not txt.startswith(USER_SKIP_PREFIXES):
+                events.append({"role": "user", "content": txt, "ts": _ms_iso(r.get("time"))})
+        elif t == "assistant/message":
+            m = d.get("message") or {}
+            a = {"role": "assistant", "content": "", "tool_calls": []}
+            for b in m.get("content") or []:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "text":
+                    a["content"] = (a["content"] + "\n" + b.get("text", "")).strip()
+                elif b.get("type") == "tool-call":
+                    try:
+                        inp = json.loads(b.get("arguments") or "{}")
+                    except Exception:
+                        inp = None
+                    name, args = _map_dsh_tool(b.get("name", ""), inp) if isinstance(inp, dict) else (
+                        "UNSUPPORTED:bad-args", {})
+                    names[b.get("id")] = name
+                    a["tool_calls"].append({"id": b.get("id"), "name": name, "arguments": args})
+            if a["content"] or a["tool_calls"]:
+                events.append(a)
+        elif t == "tool/result":
+            m = d.get("message") or {}
+            cid = m.get("toolCallId")
+            name = names.get(cid, "UNSUPPORTED:?")
+            txt, err = _dsh_output(name, m.get("content"), bool(m.get("isError")))
+            events.append({"role": "tool", "tool_call_id": cid, "name": name, "content": txt, "is_error": err})
+        elif t == "turn/end":
+            kind = (d.get("reason") or {}).get("kind")
+            if kind in ("aborted", "interrupted", "error"):
+                events.append({"role": "break", "reason": "user_interrupt" if kind != "error" else "harness_error"})
+    if not any(e["role"] == "user" for e in events):
+        return None
+    return {"session_id": f"ds-{sid or path.parent.name}", "source": "deepseek", "project": project,
+            "started_at": started, "events": events}
+
+
 def main() -> None:
     raw, out = Path(sys.argv[1]), Path(sys.argv[2])
     out.mkdir(parents=True, exist_ok=True)
-    n = {"claude_code": 0, "codex": 0, "skipped": 0}
+    n = {"claude_code": 0, "codex": 0, "deepseek": 0, "skipped": 0}
     seen = set()
     for sub in ("claude-borg", "claude-local"):
         for f in sorted((raw / sub).rglob("*.jsonl")) if (raw / sub).exists() else []:
@@ -423,6 +545,14 @@ def main() -> None:
         seen.add(s["session_id"])
         (out / f"{s['session_id']}.json").write_text(json.dumps(s, ensure_ascii=False))
         n["codex"] += 1
+    for f in sorted((raw / "deepseek-local").rglob("session.v4.jsonl.zstd")) if (raw / "deepseek-local").exists() else []:
+        s = convert_dsh(f)
+        if s is None or s["session_id"] in seen:
+            n["skipped"] += 1
+            continue
+        seen.add(s["session_id"])
+        (out / f"{s['session_id']}.json").write_text(json.dumps(s, ensure_ascii=False))
+        n["deepseek"] += 1
     print(json.dumps(n))
 
 

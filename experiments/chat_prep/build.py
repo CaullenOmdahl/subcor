@@ -142,7 +142,7 @@ def turns_of(session: dict) -> list[dict]:
             cur = {"user": e["content"], "ts": e.get("ts"), "steps": [], "interrupted": False}
             turns.append(cur)
         elif e["role"] == "break":
-            if cur is not None and e["reason"] == "user_interrupt":
+            if cur is not None and e["reason"] in ("user_interrupt", "harness_error"):
                 cur["interrupted"] = True
             cur = None if e["reason"] == "compaction" else cur
         elif cur is None:
@@ -369,6 +369,30 @@ def main() -> None:
         stats["negative_prompts"] = len(negs)
         (d / "stats.json").write_text(json.dumps(stats, indent=1))
         manifest["capabilities"][cap] = {s: stats[s]["after_cap"] for s in ("train", "eval")}
+    # gitleaks over the built files: placeholder substitution and unwrapping can create new
+    # key:value shapes (e.g. "<VENDOR_A>-api:<tag>"); replace whatever it flags, like scrub.py does
+    post = Counter()
+    for _ in range(3):
+        found = scrub.run_gitleaks(base)
+        if not found:
+            break
+        lit: dict[str, list[tuple[str, str]]] = {}
+        for x in found:
+            for v in scrub._secret_variants(x.get("Secret", "")):
+                lit.setdefault(x.get("File", ""), []).append((v, f"gitleaks:{x.get('RuleID')}"))
+        found.clear()
+        for fname, pairs in lit.items():
+            fp = Path(fname)
+            pairs = sorted(set(pairs), key=lambda x: -len(x[0]))
+            if fp.suffix == ".jsonl":
+                lines = [json.dumps(scrub.walk(json.loads(ln), lambda t, pr=pairs: scrub.scrub_string(
+                    t, pr, [], post, {})), ensure_ascii=False) for ln in fp.read_text().splitlines()]
+                fp.write_text("\n".join(lines) + "\n")
+            else:
+                fp.write_text(json.dumps(scrub.walk(json.loads(fp.read_text()), lambda t, pr=pairs: scrub.scrub_string(
+                    t, pr, [], post, {})), indent=1))
+        lit.clear()
+    manifest["post_build_gitleaks_replaced"] = dict(post)
     (base / "manifest.json").write_text(json.dumps(manifest, indent=1))
     print(json.dumps(manifest, indent=1))
 
