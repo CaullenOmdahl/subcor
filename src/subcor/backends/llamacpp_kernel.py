@@ -177,6 +177,7 @@ class LlamaCppServingAdapter:
         trainer_dtype: Any = None,
         trainer_layer_indices: Sequence[int] | None = None,
         trainer_projections: tuple[str, ...] | None = None,
+        trainer_quantize_4bit: bool = False,
         unload_trainer_after_study: bool = False,
     ) -> None:
         if lora_mode not in _LORA_MODES:
@@ -223,6 +224,7 @@ class LlamaCppServingAdapter:
             list(trainer_layer_indices) if trainer_layer_indices is not None else None
         )
         self.trainer_projections = trainer_projections
+        self.trainer_quantize_4bit = bool(trainer_quantize_4bit)
         self.unload_trainer_after_study = unload_trainer_after_study
         self._trainer: Any = None
 
@@ -607,6 +609,8 @@ class LlamaCppServingAdapter:
             "device": self.trainer_device,
             "dtype": self.trainer_dtype,  # str or torch.dtype; TorchKernel resolves it
         }
+        if self.trainer_quantize_4bit:
+            kwargs["quantize_base_weights"] = True
         if self.trainer_projections is not None:
             kwargs["target_projections"] = self.trainer_projections
         return load_trainer_from_gguf(self.base_gguf, **kwargs)

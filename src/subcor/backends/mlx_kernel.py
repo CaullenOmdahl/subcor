@@ -1107,7 +1107,19 @@ class MLXKernel:
                 # template's inter-turn separator newline right after EOS.
                 if eos_str and upto_text.endswith(f"{eos_str}\n"):
                     upto_text = upto_text[:-1]
-                start_tok = len(self.tokenizer.encode(pref_text))
+                if upto_text.startswith(pref_text):
+                    start_tok = len(self.tokenizer.encode(pref_text))
+                else:
+                    prev_text = self.format_messages(
+                        messages[:idx],
+                        tools=tools,
+                        enable_thinking=enable_thinking,
+                        add_generation_prompt=False,
+                    )
+                    turn_chunk = upto_text[len(prev_text) :]
+                    nl = turn_chunk.find("\n")
+                    header_text = prev_text + (turn_chunk[: nl + 1] if nl != -1 else "")
+                    start_tok = len(self.tokenizer.encode(header_text))
                 end_tok = min(len(self.tokenizer.encode(upto_text)), len(full_ids))
                 for tok_pos in range(start_tok, end_tok):
                     pred_pos = tok_pos - 1

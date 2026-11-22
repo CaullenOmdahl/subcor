@@ -8,25 +8,27 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import mlx.core as mx
-import mlx.nn as nn
 import numpy as np
 import pytest
-from mlx.utils import tree_flatten
 
-from subcor.backends.mlx_kernel import (
-    MLXKernel,
-    SubcorMLXLinear,
-    chunked_gated_delta_ops,
-    export_mlx_lora_safetensors,
-    select_layer_indices,
-)
 from subcor.expansion import LowRankAdapter
 from subcor.recompile import recompile_units_for_kernel
 from subcor.router import RoutingDecision
 from subcor.server import InferenceResult, TenantManager
 from subcor.types import AdaptationMode, DeltaEncoding, SkillSpec
 from subcor.units import LayerDeltaPayload, SkillUnitRegistry, build_layer_delta
+
+mx = pytest.importorskip("mlx.core")
+nn = pytest.importorskip("mlx.nn")
+from mlx.utils import tree_flatten  # noqa: E402
+
+from subcor.backends.mlx_kernel import (  # noqa: E402
+    MLXKernel,
+    SubcorMLXLinear,
+    chunked_gated_delta_ops,
+    export_mlx_lora_safetensors,
+    select_layer_indices,
+)
 
 
 class _MiniTokenizer:

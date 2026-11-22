@@ -378,6 +378,7 @@ def _run_serve(args: argparse.Namespace) -> int:
                 trainer_dtype=args.trainer_dtype,
                 trainer_layer_indices=trainer_layers,
                 trainer_projections=projections,
+                trainer_quantize_4bit=args.trainer_quantize_4bit,
                 unload_trainer_after_study=args.unload_trainer_after_study,
             )
             if args.lora_id_map:
@@ -855,6 +856,14 @@ def main(argv: list[str] | None = None) -> int:
         type=str,
         default=None,
         help="Comma-separated layer indices to train (default: the last 6 layers of the GGUF).",
+    )
+    serve_cmd.add_argument(
+        "--trainer-quantize-4bit",
+        action="store_true",
+        help=(
+            "Pack frozen decoder-layer base weights into pure-PyTorch 4-bit INT4 buffers "
+            "(~4.5 bpw, on-the-fly dequant in forward/backward) for 12-16 GB ROCm/CUDA GPUs."
+        ),
     )
     serve_cmd.add_argument(
         "--unload-trainer-after-study",
