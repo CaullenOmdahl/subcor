@@ -3,12 +3,13 @@
 If units specialize, each row's best column is its own capability. If they all learn the
 same general "house style", every unit helps every bucket by about the same amount.
 
-Usage: python unit_matrix.py <03-capabilities dir> <out.json> name=path/adapters.npz ...
+Usage: [SUBCOR_MODEL=.. SUBCOR_LAYERS=.. SUBCOR_PROJ=.. SUBCOR_Q4=1] python unit_matrix.py <03-capabilities dir> <out.json> name=path/adapters.npz ...
 """
 
 from __future__ import annotations
 
 import json
+import os
 import random
 import sys
 from pathlib import Path
@@ -28,11 +29,15 @@ CAPS = ("tool-calling", "code-writing", "agentic-decisions")
 def main() -> None:
     data, out = Path(sys.argv[1]), Path(sys.argv[2])
     units = dict(a.split("=", 1) for a in sys.argv[3:])
-    model, n_layers_adapted, n = "Qwen/Qwen3.5-0.8B", 8, 100
+    # SUBCOR_MODEL / SUBCOR_LAYERS ("19,23,27,31" or "last8") / SUBCOR_PROJ / SUBCOR_Q4=1 must match training
+    model, n = os.environ.get("SUBCOR_MODEL", "Qwen/Qwen3.5-0.8B"), 100
     cfg = AutoConfig.from_pretrained(model)
     total = int(getattr(cfg, "text_config", cfg).num_hidden_layers)
-    k = TorchKernel(model, target_layer_indices=list(range(total - n_layers_adapted, total)),
-                    target_projections=("mlp.down_proj",))
+    spec = os.environ.get("SUBCOR_LAYERS", "last8")
+    idx = list(range(total - int(spec[4:]), total)) if spec.startswith("last") else [int(x) for x in spec.split(",")]
+    k = TorchKernel(model, target_layer_indices=idx,
+                    target_projections=tuple(os.environ.get("SUBCOR_PROJ", "mlp.down_proj").split(",")),
+                    quantize_base_weights=os.environ.get("SUBCOR_Q4") == "1")
     names = sorted(k.instrumented)
     sets = {}
     for c in CAPS:

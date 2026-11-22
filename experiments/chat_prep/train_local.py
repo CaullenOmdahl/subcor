@@ -163,7 +163,8 @@ def main() -> None:
     ap.add_argument("--model", default="Qwen/Qwen3.5-0.8B")
     ap.add_argument("--steps", type=int, default=300)
     ap.add_argument("--rank", type=int, default=16)
-    ap.add_argument("--layers", type=int, default=8)
+    ap.add_argument("--layers", type=int, default=8, help="adapt the last N layers (ignored with --layer-indices)")
+    ap.add_argument("--layer-indices", default="", help="explicit layers, e.g. 19,23,27,31 (Mac periodic_full_attn=4)")
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--grad-accum", type=int, default=1)
     ap.add_argument("--max-seq-len", type=int, default=2048)
@@ -190,7 +191,9 @@ def main() -> None:
     cfg = AutoConfig.from_pretrained(a.model)
     n_layers = int(getattr(cfg, "text_config", cfg).num_hidden_layers)
     t0 = time.perf_counter()
-    k = TorchKernel(a.model, target_layer_indices=list(range(n_layers - a.layers, n_layers)),
+    idx = ([int(x) for x in a.layer_indices.split(",")] if a.layer_indices
+           else list(range(n_layers - a.layers, n_layers)))
+    k = TorchKernel(a.model, target_layer_indices=idx,
                     target_projections=tuple(a.projections.split(",")),
                     quantize_base_weights=a.quantize_4bit)
     layer_names = sorted(k.instrumented)
