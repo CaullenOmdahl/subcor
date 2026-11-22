@@ -118,23 +118,24 @@ def recompile_units_for_kernel(
             continue
 
         # Seed destination tenant's verified telemetry from the sanitized SkillSpec.
-        dest_manager.ingest_trajectories(
-            target_tenant,
-            [
-                {
-                    "task_family": spec.task_family,
-                    "prompt": prompt,
-                    "response": "",
-                    "senior_correction": target,
-                    "evidence": {
-                        "verified": True,
-                        "verifier": "portable_skill_spec",
-                        "method": "skill_spec_recompile",
-                    },
-                }
-                for prompt, target in spec.training_pairs
-            ],
-        )
+        if spec.training_pairs:
+            dest_manager.ingest_trajectories(
+                target_tenant,
+                [
+                    {
+                        "task_family": spec.task_family,
+                        "prompt": prompt,
+                        "response": "",
+                        "senior_correction": target,
+                        "evidence": {
+                            "verified": True,
+                            "verifier": "portable_skill_spec",
+                            "method": "skill_spec_recompile",
+                        },
+                    }
+                    for prompt, target in spec.training_pairs
+                ],
+            )
 
         res = dest_manager.run_study_cycle(
             target_tenant,
@@ -145,6 +146,9 @@ def recompile_units_for_kernel(
             summary=spec.summary,
             proposer=spec.proposer,
             system_prompt=spec.system_prompt,
+            training_trajectories=(
+                list(spec.training_trajectories) if spec.training_trajectories else None
+            ),
             eval_cases=list(spec.eval_cases) if spec.eval_cases else None,
             baseline_cases=list(spec.baseline_cases) if spec.baseline_cases else None,
             negative_prompts=list(spec.negative_prompts) if spec.negative_prompts else None,

@@ -290,7 +290,12 @@ def _run_serve_cli(args: argparse.Namespace) -> int:
             else None
         )
         print(f"Loading frozen base kernel '{args.model}' ...")
-        kernel = MLXServingAdapter(model_id=args.model, target_projections=projections)
+        kernel = MLXServingAdapter(
+            model_id=args.model,
+            target_projections=projections,
+            layer_preset=args.layer_preset,
+            num_layers=args.num_layers,
+        )
     manager = TenantManager(state_dir=state_dir, kernel=kernel, initial_tenants=tenants)
     server = SubcorHTTPServer(
         (args.host, args.port),
@@ -647,6 +652,18 @@ def main(argv: list[str] | None = None) -> int:
             "Comma-separated linear projections to instrument (e.g. "
             "'mlp.down_proj,mlp.gate_proj,mlp.up_proj,self_attn.o_proj'). Default: mlp.down_proj."
         ),
+    )
+    serve_cmd.add_argument(
+        "--layer-preset",
+        choices=("default", "last_n", "periodic_full_attn", "every_k"),
+        default=None,
+        help="Multi-layer adaptation preset for MLX backend (e.g. 'periodic_full_attn', 'last_n').",
+    )
+    serve_cmd.add_argument(
+        "--num-layers",
+        type=int,
+        default=None,
+        help="Number of blocks to adapt when --layer-preset is set (e.g. 4).",
     )
     serve_cmd.add_argument(
         "--allow-unauthenticated",

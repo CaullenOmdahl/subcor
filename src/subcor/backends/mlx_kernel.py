@@ -17,9 +17,12 @@ Gemma-4-E2B-it-qat-4bit) as an immutable base kernel:
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import math
-from collections.abc import Iterator
+import time
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,6 +43,253 @@ from subcor.router import MoESkillRouter, RoutingDecision
 from subcor.units import LayerDeltaPayload, SkillUnitRegistry
 
 DEFAULT_COMPACT_MODEL = "mlx-community/Qwen3.5-0.8B-4bit"
+logger = logging.getLogger(__name__)
+
+
+def chunked_gated_delta_ops(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    g: mx.array,
+    beta: mx.array,
+    state: mx.array | None = None,
+    mask: mx.array | None = None,
+    *,
+    chunk_size: int = 32,
+    fallback_ops: Any = None,
+) -> tuple[mx.array, mx.array]:
+    """Memory-safe, mathematically exact chunkwise-parallel Gated Delta Rule (Yang et al., 2024).
+
+    Replaces mlx-lm's O(T) unrolled Python recurrence during backprop (which allocates
+    O(T * Hv * Dv * Dk) intermediate state tensors and OOMs on 16 GB unified memory at
+    seq_len=2048) with chunk-checkpointed FP32 matmuls + overflow-free forward substitution
+    for `(I + M) U = rhs`, keeping peak RAM flat across multi-layer hybrid training.
+    """
+    b_size, seq_len, hk, dk = q.shape
+    hv, dv = v.shape[-2:]
+    in_dtype = q.dtype
+    state_f32 = (
+        mx.zeros((b_size, hv, dv, dk), dtype=mx.float32)
+        if state is None
+        else state.astype(mx.float32)
+    )
+    if mask is not None or g.ndim == 4:
+        if fallback_ops is not None:
+            return fallback_ops(q, k, v, g, beta, state_f32, mask)
+        from mlx_lm.models.gated_delta import gated_delta_ops as _stock_ops
+
+        return _stock_ops(q, k, v, g, beta, state_f32, mask)
+
+    if (repeat_factor := hv // hk) > 1:
+        q = mx.repeat(q, repeat_factor, -2)
+        k = mx.repeat(k, repeat_factor, -2)
+
+    q_h = q.transpose(0, 2, 1, 3).astype(mx.float32)
+    k_h = k.transpose(0, 2, 1, 3).astype(mx.float32)
+    v_h = v.transpose(0, 2, 1, 3).astype(mx.float32)
+    g_h = mx.clip(g.transpose(0, 2, 1).astype(mx.float32), 1e-6, 1.0)
+    b_h = beta.transpose(0, 2, 1).astype(mx.float32)
+    log_g = mx.log(g_h)
+
+    def _run_chunk(
+        qc: mx.array,
+        kc: mx.array,
+        vc: mx.array,
+        lgc: mx.array,
+        bc: mx.array,
+        s_prev: mx.array,
+    ) -> tuple[mx.array, mx.array]:
+        c_len = qc.shape[2]
+        gamma = mx.cumsum(lgc, axis=-1)  # (B, Hv, C)
+        idx = mx.arange(c_len)
+        tril_strict = idx[:, None] > idx[None, :]
+        tril_incl = idx[:, None] >= idx[None, :]
+        diff = gamma[:, :, :, None] - gamma[:, :, None, :]
+        safe_strict = mx.clip(mx.where(tril_strict, diff, -40.0), -40.0, 0.0)
+        safe_incl = mx.clip(mx.where(tril_incl, diff, -40.0), -40.0, 0.0)
+        decay_strict = mx.where(tril_strict, mx.exp(safe_strict), 0.0)
+        decay_incl = mx.where(tril_incl, mx.exp(safe_incl), 0.0)
+
+        ktk = kc @ kc.swapaxes(-1, -2)
+        m_mat = (bc[:, :, :, None] * decay_strict) * ktk
+
+        # Overflow-free forward substitution for (I + M) U = rhs (never forms M^p).
+        exp_gamma = mx.exp(mx.clip(gamma, -40.0, 0.0))
+        ks = kc @ s_prev.swapaxes(-1, -2)
+        rhs = bc[:, :, :, None] * (vc - exp_gamma[:, :, :, None] * ks)
+        u_rows = [rhs[:, :, 0:1, :]]
+        for t in range(1, c_len):
+            u_prev = mx.concatenate(u_rows, axis=2)
+            m_row = m_mat[:, :, t : t + 1, :t]
+            u_rows.append(rhs[:, :, t : t + 1, :] - (m_row @ u_prev))
+        u_mat = mx.concatenate(u_rows, axis=2)
+
+        qtk = qc @ kc.swapaxes(-1, -2)
+        y_chunk = (exp_gamma[:, :, :, None] * qc) @ s_prev.swapaxes(-1, -2) + (
+            qtk * decay_incl
+        ) @ u_mat
+        g_end = gamma[:, :, -1:]
+        scale_k = mx.exp(mx.clip(g_end - gamma, -40.0, 0.0))
+        s_next = mx.exp(mx.clip(g_end, -40.0, 0.0))[:, :, :, None] * s_prev + u_mat.swapaxes(
+            -1, -2
+        ) @ (scale_k[:, :, :, None] * kc)
+        return y_chunk, s_next
+
+    ckpt_chunk = mx.checkpoint(_run_chunk)
+    ys: list[mx.array] = []
+    cur_state = state_f32
+    for start in range(0, seq_len, chunk_size):
+        end = min(start + chunk_size, seq_len)
+        yc, cur_state = ckpt_chunk(
+            q_h[:, :, start:end, :],
+            k_h[:, :, start:end, :],
+            v_h[:, :, start:end, :],
+            log_g[:, :, start:end],
+            b_h[:, :, start:end],
+            cur_state,
+        )
+        ys.append(yc)
+
+    y_all = mx.concatenate(ys, axis=2).transpose(0, 2, 1, 3).astype(in_dtype)
+    return y_all, cur_state
+
+
+@contextlib.contextmanager
+def _chunked_gated_delta_context(*, enabled: bool = True, chunk_size: int = 32) -> Iterator[bool]:
+    """Temporarily enable chunkwise-parallel GatedDeltaNet ops during training only."""
+    if not enabled:
+        yield False
+        return
+    try:
+        import mlx_lm.models.gated_delta as gd
+    except ImportError:
+        yield False
+        return
+
+    orig_ops = gd.gated_delta_ops
+
+    def _patched(
+        q: mx.array,
+        k: mx.array,
+        v: mx.array,
+        g: mx.array,
+        beta: mx.array,
+        state: mx.array | None = None,
+        mask: mx.array | None = None,
+    ) -> tuple[mx.array, mx.array]:
+        return chunked_gated_delta_ops(
+            q,
+            k,
+            v,
+            g,
+            beta,
+            state=state,
+            mask=mask,
+            chunk_size=chunk_size,
+            fallback_ops=orig_ops,
+        )
+
+    gd.gated_delta_ops = _patched
+    try:
+        yield True
+    finally:
+        gd.gated_delta_ops = orig_ops
+
+
+def select_layer_indices(
+    model: nn.Module,
+    *,
+    preset: str = "default",
+    num_layers: int | None = None,
+    stride: int = 4,
+) -> list[int]:
+    """Select transformer block indices for multi-layer adaptation on standard or hybrid models.
+
+    Supported presets:
+      - ``"default"``: compact middle + upper layer spread (backward-compatible default).
+      - ``"last_n"``: the final ``num_layers`` contiguous blocks (default 4).
+      - ``"periodic_full_attn"``: the last ``num_layers`` full-attention blocks
+        (``not getattr(layer, "is_linear", False)``) across depth on hybrid models such as
+        Qwen3.5 (e.g. ``[19, 23, 27, 31]`` on 32-layer 4B); falls back to strided layers on
+        pure full-attention architectures.
+      - ``"every_k"``: every ``stride``-th block ending at ``total_layers - 1``.
+    """
+    layers = getattr(model, "layers", None)
+    if layers is None:
+        inner = getattr(model, "model", None)
+        layers = getattr(inner, "layers", [])
+    total = len(layers)
+    if total == 0:
+        raise ValueError("Model exposes 0 transformer layers")
+
+    key = preset.strip().lower()
+    if key == "default":
+        candidates = [7, 11, 15, 19, total - 3, total - 2, total - 1]
+        return sorted({i for i in candidates if 0 <= i < total})
+
+    if key == "last_n":
+        count = max(1, min(total, num_layers if num_layers is not None else 4))
+        return list(range(total - count, total))
+
+    if key == "periodic_full_attn":
+        full_attn = [i for i, lyr in enumerate(layers) if not getattr(lyr, "is_linear", False)]
+        count = max(1, num_layers if num_layers is not None else 4)
+        if full_attn and len(full_attn) < total:
+            # Hybrid model (e.g. Qwen3.5 GatedDeltaNet + periodic full-attention).
+            return full_attn[-count:]
+        # Pure full-attention model: distribute periodically from the top down.
+        step = max(1, stride)
+        picked = list(range(total - 1, -1, -step))[:count]
+        return sorted(picked)
+
+    if key == "every_k":
+        step = max(1, stride)
+        picked = list(range(total - 1, -1, -step))
+        if num_layers is not None:
+            picked = picked[: max(1, num_layers)]
+        return sorted(picked)
+
+    raise ValueError(
+        f"Unknown layer_preset={preset!r}; expected one of 'default', 'last_n', "
+        "'periodic_full_attn', 'every_k'"
+    )
+
+
+def _normalize_chat_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize OpenAI chat messages (including JSON-string tool_call arguments) for Jinja."""
+    cleaned: list[dict[str, Any]] = []
+    for msg in messages:
+        role = str(msg.get("role", "user"))
+        entry: dict[str, Any] = {"role": role}
+        content = msg.get("content")
+        if content is not None:
+            entry["content"] = str(content)
+        elif role != "assistant":
+            entry["content"] = ""
+        if "tool_calls" in msg and msg["tool_calls"]:
+            norm_calls: list[dict[str, Any]] = []
+            for tc in msg["tool_calls"]:
+                tc_copy = dict(tc)
+                fn = tc_copy.get("function")
+                if isinstance(fn, dict):
+                    fn_copy = dict(fn)
+                    raw_args = fn_copy.get("arguments")
+                    if isinstance(raw_args, str):
+                        try:
+                            parsed = json.loads(raw_args)
+                            if isinstance(parsed, dict):
+                                fn_copy["arguments"] = parsed
+                        except json.JSONDecodeError:
+                            pass
+                    tc_copy["function"] = fn_copy
+                norm_calls.append(tc_copy)
+            entry["tool_calls"] = norm_calls
+        if "tool_call_id" in msg and msg["tool_call_id"]:
+            entry["tool_call_id"] = str(msg["tool_call_id"])
+        if "name" in msg and msg["name"]:
+            entry["name"] = str(msg["name"])
+        cleaned.append(entry)
+    return cleaned
 
 
 def _ste_sign_pm1(z: mx.array) -> mx.array:
@@ -339,18 +589,23 @@ class MLXKernel:
         target_layer_indices: list[int] | None = None,
         projection_attr: str = "mlp.down_proj",
         target_projections: tuple[str, ...] | None = None,
+        layer_preset: str | None = None,
+        num_layers: int | None = None,
+        layer_stride: int = 4,
     ) -> None:
         self.model_id = model_id
         self.model, self.tokenizer = load(model_id)
         self.model.freeze()
         self.layer_prefix: str = _detect_layer_prefix(self.model)
 
-        num_layers = len(self.model.layers)
-        self.total_layers: int = num_layers
+        self.total_layers: int = len(self.model.layers)
         if target_layer_indices is None:
-            # Default: compact set covering middle + upper layers (including MIT Exp 8's 15 & 19).
-            candidates = [7, 11, 15, 19, num_layers - 3, num_layers - 2, num_layers - 1]
-            target_layer_indices = sorted({i for i in candidates if 0 <= i < num_layers})
+            target_layer_indices = select_layer_indices(
+                self.model,
+                preset=layer_preset or "default",
+                num_layers=num_layers,
+                stride=layer_stride,
+            )
 
         projections = target_projections if target_projections is not None else (projection_attr,)
         self.instrumented: dict[str, SubcorMLXLinear] = {}
@@ -375,6 +630,7 @@ class MLXKernel:
 
         self._greedy_sampler = make_sampler(temp=0.0)
         self._verified_unit_cache: dict[str, tuple[str, list[tuple[str, LowRankAdapter]]]] = {}
+        self.last_train_stats: dict[str, Any] = {}
 
     def format_messages(
         self,
@@ -382,28 +638,13 @@ class MLXKernel:
         *,
         tools: list[dict[str, Any]] | None = None,
         enable_thinking: bool = False,
+        add_generation_prompt: bool = True,
     ) -> str:
         """Render full multi-turn OpenAI messages (+ optional tool schemas) via chat template."""
-        cleaned: list[dict[str, Any]] = []
-        for msg in messages:
-            role = str(msg.get("role", "user"))
-            entry: dict[str, Any] = {"role": role}
-            content = msg.get("content")
-            if content is not None:
-                entry["content"] = str(content)
-            elif role != "assistant":
-                entry["content"] = ""
-            if "tool_calls" in msg and msg["tool_calls"]:
-                entry["tool_calls"] = msg["tool_calls"]
-            if "tool_call_id" in msg and msg["tool_call_id"]:
-                entry["tool_call_id"] = str(msg["tool_call_id"])
-            if "name" in msg and msg["name"]:
-                entry["name"] = str(msg["name"])
-            cleaned.append(entry)
-
+        cleaned = _normalize_chat_messages(messages)
         kwargs: dict[str, Any] = {
             "tokenize": False,
-            "add_generation_prompt": True,
+            "add_generation_prompt": add_generation_prompt,
         }
         template = getattr(self.tokenizer, "chat_template", "") or ""
         if "enable_thinking" in template:
@@ -793,13 +1034,134 @@ class MLXKernel:
             capture_activations=capture_activations,
         )
 
+    def _tokenize_training_example(
+        self,
+        item: (
+            tuple[str, str]
+            | tuple[str | None, str, str]
+            | tuple[str | None, str, str, list[dict[str, Any]] | None]
+            | dict[str, Any]
+        ),
+        *,
+        default_system_prompt: str | None,
+        enable_thinking: bool,
+        max_seq_len: int,
+    ) -> tuple[tuple[mx.array, mx.array, mx.array] | None, str]:
+        """Tokenize a single-turn tuple or multi-turn trajectory with assistant-only loss positions.
+
+        Returns ``((x_ids, y_target, loss_positions), "ok")`` or ``(None, reason)`` where
+        ``reason`` is ``"too_long"`` or ``"empty_target"``.
+        """
+        eos_id = self.tokenizer.eos_token_id
+        eos_str = getattr(self.tokenizer, "eos_token", None)
+
+        if isinstance(item, dict):
+            raw_msgs = item.get("messages")
+            if not isinstance(raw_msgs, list) or not raw_msgs:
+                return None, "empty_target"
+            messages = [dict(m) for m in raw_msgs]
+            if default_system_prompt and messages[0].get("role") != "system":
+                messages.insert(0, {"role": "system", "content": default_system_prompt})
+            tools = item.get("tools")
+
+            full_text = self.format_messages(
+                messages,
+                tools=tools,
+                enable_thinking=enable_thinking,
+                add_generation_prompt=False,
+            )
+            full_ids = self.tokenizer.encode(full_text)
+            if len(full_ids) < 2:
+                return None, "empty_target"
+            if len(full_ids) > max_seq_len:
+                return None, "too_long"
+
+            pos_set: set[int] = set()
+            for idx, msg in enumerate(messages):
+                if msg.get("role") != "assistant":
+                    continue
+                pref_text = self.format_messages(
+                    messages[:idx],
+                    tools=tools,
+                    enable_thinking=enable_thinking,
+                    add_generation_prompt=True,
+                )
+                upto_text = self.format_messages(
+                    messages[: idx + 1],
+                    tools=tools,
+                    enable_thinking=enable_thinking,
+                    add_generation_prompt=False,
+                )
+                # Keep supervision through the assistant turn's EOS token, excluding the
+                # template's inter-turn separator newline right after EOS.
+                if eos_str and upto_text.endswith(f"{eos_str}\n"):
+                    upto_text = upto_text[:-1]
+                start_tok = len(self.tokenizer.encode(pref_text))
+                end_tok = min(len(self.tokenizer.encode(upto_text)), len(full_ids))
+                for tok_pos in range(start_tok, end_tok):
+                    pred_pos = tok_pos - 1
+                    if 0 <= pred_pos < len(full_ids) - 1:
+                        pos_set.add(pred_pos)
+
+            if not pos_set:
+                return None, "empty_target"
+
+            pos_list = sorted(pos_set)
+            x_ids = mx.array([full_ids[:-1]], dtype=mx.int32)
+            loss_positions = mx.array(pos_list, dtype=mx.int32)
+            y_target = mx.array([[full_ids[p + 1] for p in pos_list]], dtype=mx.int32)
+            return (x_ids, y_target, loss_positions), "ok"
+
+        if len(item) == 2:
+            ex_sys, user_prompt, target, ex_tools = (
+                default_system_prompt,
+                item[0],
+                item[1],
+                None,
+            )
+        elif len(item) == 3:
+            ex_sys, user_prompt, target, ex_tools = item[0], item[1], item[2], None
+        else:
+            ex_sys, user_prompt, target, ex_tools = item[0], item[1], item[2], item[3]
+
+        msgs: list[dict[str, Any]] = []
+        if ex_sys:
+            msgs.append({"role": "system", "content": ex_sys})
+        msgs.append({"role": "user", "content": user_prompt})
+        prefix = self.format_messages(
+            msgs,
+            tools=ex_tools,
+            enable_thinking=enable_thinking,
+            add_generation_prompt=True,
+        )
+        prompt_ids = self.tokenizer.encode(prefix)
+        target_ids = self.tokenizer.encode(target, add_special_tokens=False)
+        if eos_id is not None and (not target_ids or target_ids[-1] != eos_id):
+            target_ids = [*target_ids, int(eos_id)]
+        if not target_ids:
+            return None, "empty_target"
+
+        full_ids = prompt_ids + target_ids
+        if len(full_ids) < 2:
+            return None, "empty_target"
+        if len(full_ids) > max_seq_len:
+            return None, "too_long"
+
+        x_ids = mx.array([full_ids[:-1]], dtype=mx.int32)
+        target_start = len(prompt_ids) - 1
+        pos_list = list(range(target_start, len(full_ids) - 1))
+        loss_positions = mx.array(pos_list, dtype=mx.int32)
+        y_target = mx.array([full_ids[target_start + 1 :]], dtype=mx.int32)
+        return (x_ids, y_target, loss_positions), "ok"
+
     def train_qlora_adapters(
         self,
-        pairs: (
-            list[tuple[str, str]]
-            | list[tuple[str | None, str, str]]
-            | list[tuple[str | None, str, str, list[dict[str, Any]] | None]]
-        ),
+        pairs: Sequence[
+            tuple[str, str]
+            | tuple[str | None, str, str]
+            | tuple[str | None, str, str, list[dict[str, Any]] | None]
+            | dict[str, Any]
+        ],
         *,
         layer_names: list[str],
         system_prompt: str | None = None,
@@ -809,20 +1171,26 @@ class MLXKernel:
         binary_ste: bool = False,
         steps: int = 108,
         lr: float = 3e-4,
-        max_seq_len: int = 1536,
+        max_seq_len: int = 2048,
         grad_accum: int = 1,
+        grad_checkpoint: bool | None = None,
         seed: int = 42,
     ) -> tuple[dict[str, LowRankAdapter], list[float], float]:
         """Function-preserving LoRA expansion + Apple Silicon GPU QLoRA adaptation.
 
         Freezes the entire base model, attaches zero-initialized LoRA branches to
-        layer_names, verifies exact zero logit perturbation before step 0, trains
-        ONLY the new LoRA weights via masked causal LM cross-entropy on verified
-        (prompt, target), (system_prompt, prompt, target), or
-        (system_prompt, prompt, target, tools) examples, then extracts and detaches
-        the trained adapters.
+        ``layer_names``, verifies exact zero logit perturbation before step 0, trains
+        ONLY the new LoRA weights via assistant-only masked causal LM cross-entropy on
+        either single-turn tuples or canonical multi-turn trajectory dicts
+        (``{"messages": [...], "tools": [...]}``), then extracts and detaches the
+        trained adapters.
 
-        Returns (adapters_by_layer, loss_history, zero_perturbation_max_diff).
+        Uses frozen-prefix caching, target-position-sliced ``lm_head`` projection,
+        layer-level ``mx.checkpoint`` for multi-layer adaptation, minimal per-layer
+        ``train()`` scoping, and exact chunkwise-parallel GatedDeltaNet ops so hybrid
+        4B models train multi-layer adapters cleanly within 16 GB unified memory.
+
+        Returns ``(adapters_by_layer, loss_history, zero_perturbation_max_diff)``.
         """
         if not pairs:
             raise ValueError("pairs must be non-empty")
@@ -830,18 +1198,25 @@ class MLXKernel:
             if name not in self.instrumented:
                 raise KeyError(f"Layer '{name}' is not instrumented")
 
-        normalized: list[tuple[str | None, str, str, list[dict[str, Any]] | None]] = []
-        for item in pairs:
-            if len(item) == 2:
-                normalized.append((system_prompt, item[0], item[1], None))
-            elif len(item) == 3:
-                normalized.append((item[0], item[1], item[2], None))
-            else:
-                normalized.append((item[0], item[1], item[2], item[3]))
+        # Extract a representative probe prompt for zero-perturbation verification.
+        first_item = pairs[0]
+        if isinstance(first_item, dict):
+            first_msgs = list(first_item.get("messages") or [])
+            probe_sys = next(
+                (str(m["content"]) for m in first_msgs if m.get("role") == "system"),
+                system_prompt,
+            )
+            probe_prompt = next(
+                (str(m["content"]) for m in first_msgs if m.get("role") == "user"),
+                "Hello",
+            )
+        elif len(first_item) == 2:
+            probe_sys, probe_prompt = system_prompt, first_item[0]
+        else:
+            probe_sys, probe_prompt = first_item[0], first_item[1]
 
         # Measure live logits BEFORE expansion (in eval mode).
         self.model.eval()
-        probe_sys, probe_prompt, _, _ = normalized[0]
         logits_before = self.probe_logits(
             probe_prompt,
             system_prompt=probe_sys,
@@ -849,9 +1224,6 @@ class MLXKernel:
         )
 
         # Freeze entire model, then attach zero-initialized FP32 LoRA branches.
-        # When binary_ste=True, we run Two-Stage QAT:
-        #   Stage 1 (70% steps): FP32 warm-start for seed-stable basin discovery
-        #   Stage 2 (30% steps): Convert to Sub1Bit Binary STE and refine around {-1, +1}
         self.model.freeze()
         for idx, name in enumerate(layer_names):
             layer = self.instrumented[name]
@@ -866,38 +1238,46 @@ class MLXKernel:
         )
         zero_perturb_diff = float(np.max(np.abs(logits_after - logits_before)))
 
-        # Pre-tokenize all examples with completion-only loss spans.
-        eos_id = self.tokenizer.eos_token_id
-        raw_examples: list[tuple[mx.array, mx.array, int]] = []
-        for ex_sys, user_prompt, target, ex_tools in normalized:
-            msgs: list[dict[str, Any]] = []
-            if ex_sys:
-                msgs.append({"role": "system", "content": ex_sys})
-            msgs.append({"role": "user", "content": user_prompt})
-            prefix = self.format_messages(
-                msgs,
-                tools=ex_tools,
+        # Pre-tokenize all examples with assistant-only loss position indices and explicit drop stats.
+        raw_examples: list[tuple[mx.array, mx.array, mx.array]] = []
+        dropped_too_long = 0
+        dropped_empty_target = 0
+        for item in pairs:
+            tok_ex, reason = self._tokenize_training_example(
+                item,
+                default_system_prompt=system_prompt,
                 enable_thinking=enable_thinking,
+                max_seq_len=max_seq_len,
             )
-            prompt_ids = self.tokenizer.encode(prefix)
-            target_ids = self.tokenizer.encode(target, add_special_tokens=False)
-            if eos_id is not None and (not target_ids or target_ids[-1] != eos_id):
-                target_ids = [*target_ids, int(eos_id)]
-            full_ids = prompt_ids + target_ids
-            if len(full_ids) < 2 or len(full_ids) > max_seq_len:
-                continue
+            if tok_ex is not None:
+                raw_examples.append(tok_ex)
+            elif reason == "too_long":
+                dropped_too_long += 1
+            else:
+                dropped_empty_target += 1
 
-            x_ids = mx.array([full_ids[:-1]], dtype=mx.int32)
-            target_start = len(prompt_ids) - 1
-            y_target = mx.array([full_ids[target_start + 1 :]], dtype=mx.int32)
-            raw_examples.append((x_ids, y_target, target_start))
-
+        if dropped_too_long > 0 or dropped_empty_target > 0:
+            logger.warning(
+                "MLX QLoRA tokenization kept %d/%d examples (dropped_too_long=%d > max_seq_len=%d, "
+                "dropped_empty_target=%d).",
+                len(raw_examples),
+                len(pairs),
+                dropped_too_long,
+                max_seq_len,
+                dropped_empty_target,
+            )
         if not raw_examples:
-            raise ValueError("No valid tokenized examples produced from pairs")
+            for name in layer_names:
+                self.instrumented[name].detach_trainable_lora()
+            self.model.freeze()
+            self.model.eval()
+            raise ValueError(
+                f"No valid tokenized examples produced from {len(pairs)} inputs "
+                f"(dropped_too_long={dropped_too_long} > max_seq_len={max_seq_len}, "
+                f"dropped_empty_target={dropped_empty_target})"
+            )
 
-        # Determine if exact frozen-prefix caching + target-sliced lm_head is supported:
-        # cuts peak memory ~10-15x and speeds up upper-layer LoRA training ~5x with
-        # mathematically identical gradients (all layers < first_trainable_idx are frozen).
+        # Determine if exact frozen-prefix caching + target-sliced lm_head is supported.
         layer_indices = [
             int(n.split(".")[1])
             for n in layer_names
@@ -918,11 +1298,29 @@ class MLXKernel:
             )
         )
 
-        cached_examples: list[tuple[mx.array, mx.array, int]] = []
+        tail_layers = (
+            list(inner_model.layers[first_trainable_idx:])
+            if (can_use_prefix_cache and inner_model is not None)
+            else []
+        )
+        use_grad_checkpoint = (
+            (len(tail_layers) > 1) if grad_checkpoint is None else bool(grad_checkpoint)
+        )
+        has_linear_in_tail = (
+            any(getattr(lyr, "is_linear", False) for lyr in tail_layers)
+            if can_use_prefix_cache
+            else (
+                any(getattr(lyr, "is_linear", False) for lyr in inner_model.layers)
+                if inner_model is not None and hasattr(inner_model, "layers")
+                else False
+            )
+        )
+
+        cached_examples: list[tuple[mx.array, mx.array, mx.array]] = []
         if can_use_prefix_cache:
             assert inner_model is not None
             self.model.eval()
-            for x_ids, y_target, target_start in raw_examples:
+            for x_ids, y_target, loss_positions in raw_examples:
                 h = inner_model.embed_tokens(x_ids)
                 fa_mask = create_attention_mask(h, None)
                 ssm_mask = create_ssm_mask(h, None) if hasattr(inner_model, "ssm_idx") else None
@@ -930,14 +1328,14 @@ class MLXKernel:
                     mask = ssm_mask if getattr(layer, "is_linear", False) else fa_mask
                     h = layer(h, mask=mask, cache=None)
                 mx.eval(h)
-                cached_examples.append((h, y_target, target_start))
+                cached_examples.append((h, y_target, loss_positions))
             mx.clear_cache()
 
             def loss_fn(
                 model: nn.Module,
                 h_prefix: mx.array,
                 y_target: mx.array,
-                target_start: int,
+                loss_positions: mx.array,
             ) -> mx.array:
                 inner = model.model
                 lm = getattr(model, "language_model", model)
@@ -946,13 +1344,26 @@ class MLXKernel:
                 ssm_mask = create_ssm_mask(h, None) if hasattr(inner, "ssm_idx") else None
                 for layer in inner.layers[first_trainable_idx:]:
                     mask = ssm_mask if getattr(layer, "is_linear", False) else fa_mask
-                    h = layer(h, mask=mask, cache=None)
-                # Slice ONLY the completion token positions before the 248k-vocab lm_head!
-                h_tail = inner.norm(h)[:, target_start:, :]
+                    if use_grad_checkpoint:
+
+                        def _ckpt_layer(
+                            params: Any,
+                            x_in: mx.array,
+                            m_in: Any,
+                            _layer: nn.Module = layer,
+                        ) -> mx.array:
+                            _layer.update(params)
+                            return _layer(x_in, mask=m_in, cache=None)
+
+                        h = mx.checkpoint(_ckpt_layer)(layer.trainable_parameters(), h, mask)
+                    else:
+                        h = layer(h, mask=mask, cache=None)
+                # Gather ONLY masked assistant/tool-call positions before the 248k-vocab lm_head!
+                h_sel = inner.norm(h)[:, loss_positions, :]
                 if getattr(getattr(lm, "args", None), "tie_word_embeddings", False):
-                    logits = inner.embed_tokens.as_linear(h_tail).astype(mx.float32)
+                    logits = inner.embed_tokens.as_linear(h_sel).astype(mx.float32)
                 else:
-                    logits = lm.lm_head(h_tail).astype(mx.float32)
+                    logits = lm.lm_head(h_sel).astype(mx.float32)
                 return mx.mean(nn.losses.cross_entropy(logits, y_target, reduction="none"))
         else:
             cached_examples = raw_examples
@@ -961,9 +1372,9 @@ class MLXKernel:
                 model: nn.Module,
                 x_ids: mx.array,
                 y_target: mx.array,
-                target_start: int,
+                loss_positions: mx.array,
             ) -> mx.array:
-                logits = model(x_ids)[:, target_start:, :].astype(mx.float32)
+                logits = model(x_ids)[:, loss_positions, :].astype(mx.float32)
                 return mx.mean(nn.losses.cross_entropy(logits, y_target, reduction="none"))
 
         loss_and_grad = nn.value_and_grad(self.model, loss_fn)
@@ -976,19 +1387,20 @@ class MLXKernel:
         losses: list[float] = []
         rng = np.random.default_rng(seed)
         order = np.arange(len(cached_examples))
-
-        # Only switch to train() if a linear-attention (GatedDeltaNet) layer lies inside
-        # the differentiable tail; when adapting only full-attention blocks (e.g. final
-        # layer), eval() keeps fast Metal kernels and runs 20-50x faster!
-        needs_train_mode = True
-        if can_use_prefix_cache and inner_model is not None:
-            tail_layers = inner_model.layers[first_trainable_idx:]
-            needs_train_mode = any(getattr(lyr, "is_linear", False) for lyr in tail_layers)
-        if needs_train_mode:
-            self.model.train()
-        else:
-            self.model.eval()
         accum = max(1, int(grad_accum))
+
+        # Minimally scope train() ONLY to linear-attention (GatedDeltaNet) layers inside the
+        # differentiable tail; all prefix & full-attention layers keep fast Metal eval() kernels.
+        self.model.eval()
+        if has_linear_in_tail and inner_model is not None and hasattr(inner_model, "layers"):
+            scoped_layers = (
+                inner_model.layers[first_trainable_idx:]
+                if can_use_prefix_cache
+                else inner_model.layers
+            )
+            for lyr in scoped_layers:
+                if getattr(lyr, "is_linear", False):
+                    lyr.train()
 
         def _add_grads(acc: Any, g: Any) -> Any:
             if acc is None:
@@ -1008,7 +1420,7 @@ class MLXKernel:
 
         ex_cursor = 0
 
-        def _next_example() -> tuple[mx.array, mx.array, int]:
+        def _next_example() -> tuple[mx.array, mx.array, mx.array]:
             nonlocal ex_cursor
             if ex_cursor % len(cached_examples) == 0:
                 rng.shuffle(order)
@@ -1016,62 +1428,87 @@ class MLXKernel:
             ex_cursor += 1
             return cached_examples[idx]
 
+        mx.reset_peak_memory()
+        t_loop0 = time.perf_counter()
         try:
-            # Stage 1: FP32 continuous warm-start.
-            opt_fp32 = optim.AdamW(
-                learning_rate=optim.cosine_decay(fp32_lr, max(1, fp32_steps), end=fp32_lr * 0.15),
-                weight_decay=0.01,
-            )
-            for step in range(fp32_steps):
-                acc_grads = None
-                step_loss = 0.0
-                for _ in range(accum):
-                    inp, y_target, target_start = _next_example()
-                    loss_val, grads = loss_and_grad(self.model, inp, y_target, target_start)
-                    acc_grads = _add_grads(acc_grads, grads)
-                    mx.eval(loss_val, acc_grads)
-                    step_loss += float(loss_val.item())
-                avg_grads = _scale_grads(acc_grads, 1.0 / accum) if accum > 1 else acc_grads
-                avg_grads, _ = optim.clip_grad_norm(avg_grads, max_norm=1.0)
-                opt_fp32.update(self.model, avg_grads)
-                mx.eval(self.model.parameters(), opt_fp32.state)
-                losses.append(step_loss / accum)
-                if (step + 1) % 8 == 0:
-                    mx.clear_cache()
-
-            # Stage 2: Binary STE (QAT) refinement directly on {-1, +1} factors + scales.
-            if ste_steps > 0:
-                self.model.freeze()
-                for name in layer_names:
-                    lyr = self.instrumented[name]
-                    lyr.convert_lora_to_binary_ste()
-                    lyr.unfreeze(keys=lyr.trainable_lora_keys(), recurse=False)
-
-                opt_ste = optim.AdamW(
-                    learning_rate=optim.cosine_decay(ste_lr, max(1, ste_steps), end=ste_lr * 0.1),
-                    weight_decay=0.0,
+            with _chunked_gated_delta_context(enabled=has_linear_in_tail) as chunked_gdn_active:
+                # Stage 1: FP32 continuous warm-start.
+                opt_fp32 = optim.AdamW(
+                    learning_rate=optim.cosine_decay(
+                        fp32_lr, max(1, fp32_steps), end=fp32_lr * 0.15
+                    ),
+                    weight_decay=0.01,
                 )
-                for step in range(ste_steps):
+                for step in range(fp32_steps):
                     acc_grads = None
                     step_loss = 0.0
                     for _ in range(accum):
-                        inp, y_target, target_start = _next_example()
-                        loss_val, grads = loss_and_grad(self.model, inp, y_target, target_start)
+                        inp, y_target, loss_positions = _next_example()
+                        loss_val, grads = loss_and_grad(self.model, inp, y_target, loss_positions)
                         acc_grads = _add_grads(acc_grads, grads)
                         mx.eval(loss_val, acc_grads)
                         step_loss += float(loss_val.item())
                     avg_grads = _scale_grads(acc_grads, 1.0 / accum) if accum > 1 else acc_grads
                     avg_grads, _ = optim.clip_grad_norm(avg_grads, max_norm=1.0)
-                    opt_ste.update(self.model, avg_grads)
-                    for name in layer_names:
-                        lyr = self.instrumented[name]
-                        if lyr.lora_a is not None and lyr.lora_b is not None:
-                            lyr.lora_a = mx.clip(lyr.lora_a, -1.0, 1.0)
-                            lyr.lora_b = mx.clip(lyr.lora_b, -1.0, 1.0)
-                    mx.eval(self.model.parameters(), opt_ste.state)
+                    opt_fp32.update(self.model, avg_grads)
+                    mx.eval(self.model.parameters(), opt_fp32.state)
                     losses.append(step_loss / accum)
                     if (step + 1) % 8 == 0:
                         mx.clear_cache()
+
+                # Stage 2: Binary STE (QAT) refinement directly on {-1, +1} factors + scales.
+                if ste_steps > 0:
+                    self.model.freeze()
+                    for name in layer_names:
+                        lyr = self.instrumented[name]
+                        lyr.convert_lora_to_binary_ste()
+                        lyr.unfreeze(keys=lyr.trainable_lora_keys(), recurse=False)
+
+                    opt_ste = optim.AdamW(
+                        learning_rate=optim.cosine_decay(
+                            ste_lr, max(1, ste_steps), end=ste_lr * 0.1
+                        ),
+                        weight_decay=0.0,
+                    )
+                    for step in range(ste_steps):
+                        acc_grads = None
+                        step_loss = 0.0
+                        for _ in range(accum):
+                            inp, y_target, loss_positions = _next_example()
+                            loss_val, grads = loss_and_grad(
+                                self.model, inp, y_target, loss_positions
+                            )
+                            acc_grads = _add_grads(acc_grads, grads)
+                            mx.eval(loss_val, acc_grads)
+                            step_loss += float(loss_val.item())
+                        avg_grads = _scale_grads(acc_grads, 1.0 / accum) if accum > 1 else acc_grads
+                        avg_grads, _ = optim.clip_grad_norm(avg_grads, max_norm=1.0)
+                        opt_ste.update(self.model, avg_grads)
+                        for name in layer_names:
+                            lyr = self.instrumented[name]
+                            if lyr.lora_a is not None and lyr.lora_b is not None:
+                                lyr.lora_a = mx.clip(lyr.lora_a, -1.0, 1.0)
+                                lyr.lora_b = mx.clip(lyr.lora_b, -1.0, 1.0)
+                        mx.eval(self.model.parameters(), opt_ste.state)
+                        losses.append(step_loss / accum)
+                        if (step + 1) % 8 == 0:
+                            mx.clear_cache()
+
+            elapsed = time.perf_counter() - t_loop0
+            peak_gb = mx.get_peak_memory() / (1024**3)
+            self.last_train_stats = {
+                "total_input": len(pairs),
+                "kept": len(raw_examples),
+                "dropped_too_long": dropped_too_long,
+                "dropped_empty_target": dropped_empty_target,
+                "max_seq_len": max_seq_len,
+                "grad_accum": accum,
+                "grad_checkpoint": use_grad_checkpoint,
+                "chunked_gated_delta": chunked_gdn_active,
+                "peak_memory_gb": round(peak_gb, 3),
+                "train_seconds": round(elapsed, 3),
+                "mean_step_seconds": round(elapsed / max(1, len(losses)), 4),
+            }
 
             extracted: dict[str, LowRankAdapter] = {}
             for name in layer_names:
@@ -1083,6 +1520,7 @@ class MLXKernel:
                 self.instrumented[name].detach_trainable_lora()
             self.model.freeze()
             self.model.eval()
+            mx.clear_cache()
 
         return extracted, losses, zero_perturb_diff
 
@@ -1098,12 +1536,16 @@ def export_mlx_lora_safetensors(
     model: nn.Module | None = None,
     layer_prefix: str | None = None,
     total_layers: int | None = None,
+    exact_layer_keys: bool = False,
 ) -> Path:
     """Export a verified Skill Unit as stock mlx-lm adapters.safetensors + adapter_config.json.
 
     Detects the exact model key prefix (e.g. `language_model.model.` on Qwen3.5 or
     `model.` on standard Llama/Gemma) and sets `num_layers` to match mlx-lm's
-    last-N-layers convention so `mlx_lm.load(model_id, adapter_path=...)` works natively.
+    last-N-layers convention so `mlx_lm.load(model_id, adapter_path=...)` works natively
+    for both contiguous and non-contiguous multi-layer units. Pass `exact_layer_keys=True`
+    to emit full dotted module paths with `num_layers=0` (avoiding zero-initialized LoRA
+    wrappers on untouched intermediate blocks for sparse periodic layouts).
     """
     manifest = registry.get_manifest(unit_id)
     deltas: list[LayerDeltaPayload] = registry.load_verified_deltas(unit_id)
@@ -1123,6 +1565,7 @@ def export_mlx_lora_safetensors(
     tensors: dict[str, mx.array] = {}
     ranks: set[int] = set()
     keys: set[str] = set()
+    full_keys: set[str] = set()
     layer_indices: list[int] = []
 
     for delta in deltas:
@@ -1132,20 +1575,28 @@ def export_mlx_lora_safetensors(
         prefix = f"{resolved_prefix}{delta.layer_name}"
         tensors[f"{prefix}.lora_a"] = mx.array(adapter.a.T.astype(np.float16))
         tensors[f"{prefix}.lora_b"] = mx.array((adapter.scale * adapter.b).T.astype(np.float16))
+        full_keys.add(prefix)
         parts = delta.layer_name.split(".")
         if len(parts) >= 2 and parts[0] == "layers" and parts[1].isdigit():
             layer_indices.append(int(parts[1]))
-        if len(parts) >= 3:
+            if len(parts) >= 3:
+                keys.add(".".join(parts[2:]))
+        elif len(parts) >= 3:
             keys.add(".".join(parts[2:]))
 
     safetensors_path = destination_dir / "adapters.safetensors"
     mx.save_safetensors(str(safetensors_path), tensors)
 
-    # mlx-lm interprets num_layers as "the last N layers" (or -1 for all layers).
-    if resolved_total_layers is not None and layer_indices:
-        num_layers = resolved_total_layers - min(layer_indices)
+    unique_indices = sorted(set(layer_indices))
+    if exact_layer_keys and full_keys:
+        num_layers = 0
+        exported_keys = sorted(full_keys)
+    elif resolved_total_layers is not None and unique_indices:
+        num_layers = resolved_total_layers - unique_indices[0]
+        exported_keys = sorted(keys)
     else:
         num_layers = -1
+        exported_keys = sorted(keys)
 
     config = {
         "fine_tune_type": "lora",
@@ -1154,7 +1605,7 @@ def export_mlx_lora_safetensors(
             "rank": max(ranks) if ranks else 1,
             "scale": 1.0,
             "dropout": 0.0,
-            "keys": sorted(keys),
+            "keys": exported_keys,
         },
         "subcor_unit": {
             "unit_id": manifest.unit_id,
@@ -1162,6 +1613,7 @@ def export_mlx_lora_safetensors(
             "base_kernel_id": manifest.base_kernel_id,
             "payload_sha256": manifest.payload_sha256,
             "effective_bits_per_weight": round(manifest.effective_bits_per_weight, 6),
+            "target_layers": sorted(full_keys),
         },
     }
     (destination_dir / "adapter_config.json").write_text(

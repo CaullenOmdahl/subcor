@@ -283,6 +283,7 @@ class SkillSpec:
     eval_cases: tuple[dict[str, str], ...]
     baseline_cases: tuple[dict[str, str], ...]
     negative_prompts: tuple[str, ...]
+    training_trajectories: tuple[dict[str, Any], ...] = ()
     rank: int = 8
     sub1bit_rank: int = 8
     steps: int = 108
@@ -300,6 +301,7 @@ class SkillSpec:
             "proposer": self.proposer,
             "system_prompt": self.system_prompt,
             "training_pairs": [[p, t] for p, t in self.training_pairs],
+            "training_trajectories": [dict(tr) for tr in self.training_trajectories],
             "eval_cases": [dict(c) for c in self.eval_cases],
             "baseline_cases": [dict(c) for c in self.baseline_cases],
             "negative_prompts": list(self.negative_prompts),
@@ -321,7 +323,8 @@ class SkillSpec:
             task_family=str(data["task_family"]),
             proposer=str(data.get("proposer", "tools")),
             system_prompt=data.get("system_prompt"),
-            training_pairs=tuple((str(p), str(t)) for p, t in data["training_pairs"]),
+            training_pairs=tuple((str(p), str(t)) for p, t in data.get("training_pairs", [])),
+            training_trajectories=tuple(dict(tr) for tr in data.get("training_trajectories", [])),
             eval_cases=tuple(dict(c) for c in data.get("eval_cases", [])),
             baseline_cases=tuple(dict(c) for c in data.get("baseline_cases", [])),
             negative_prompts=tuple(str(p) for p in data.get("negative_prompts", [])),
