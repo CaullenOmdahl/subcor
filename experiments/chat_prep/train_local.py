@@ -150,6 +150,30 @@ def mount(k: TorchKernel, adapters: dict) -> None:
         k.instrumented[name].mount_adapter("unit", a)
 
 
+def use_rep_penalty(k: TorchKernel, penalty: float) -> None:
+    """Decode-time repetition penalty (CTRL-style) over tokens generated so far. Experiment-only patch of the
+    greedy step; the reported logprob stays the unpenalized one. A new prompt (cache None) resets the history."""
+    seen: list[int] = []
+
+    def step(input_ids: torch.Tensor, cache):
+        if cache is None:
+            seen.clear()
+        with torch.inference_mode():
+            out = k.model(input_ids=input_ids, past_key_values=cache, use_cache=True, **k._logits_kw(1))
+            logits = out.logits[0, -1, :].float()
+            adj = logits.clone()
+            if seen:
+                ids = torch.tensor(sorted(set(seen)), device=adj.device)
+                v = adj[ids]
+                adj[ids] = torch.where(v > 0, v / penalty, v * penalty)
+            tok = int(torch.argmax(adj).item())
+            lp = float((logits[tok] - torch.logsumexp(logits, dim=-1)).item())
+        seen.append(tok)
+        return tok, lp, out.past_key_values
+
+    k._greedy_step = step
+
+
 def unmount(k: TorchKernel, adapters: dict) -> None:
     for name in adapters:
         k.instrumented[name].unmount_adapter("unit")
@@ -177,6 +201,7 @@ def main() -> None:
     ap.add_argument("--n-cross", type=int, default=100, help="eval windows per OTHER capability (regression check)")
     ap.add_argument("--adapters", type=Path, help="evaluate a saved adapters.npz instead of training")
     ap.add_argument("--tag", default="", help="suffix for the output directory")
+    ap.add_argument("--rep-penalty", type=float, default=1.0, help="decode-time repetition penalty (1.0 = plain greedy)")
     ap.add_argument("--gen-tokens", type=int, default=192, help="generation cap for the next-action check")
     a = ap.parse_args()
 
@@ -197,6 +222,8 @@ def main() -> None:
                     target_projections=tuple(a.projections.split(",")),
                     quantize_base_weights=a.quantize_4bit)
     layer_names = sorted(k.instrumented)
+    if a.rep_penalty != 1.0:
+        use_rep_penalty(k, a.rep_penalty)
     print(f"loaded {a.model} in {time.perf_counter() - t0:.0f}s; {len(layer_names)} adapted layers; "
           f"train={len(train)} eval={len(ev)}", flush=True)
 

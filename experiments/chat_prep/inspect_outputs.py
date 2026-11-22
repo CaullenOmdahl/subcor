@@ -1,6 +1,6 @@
 """Print raw base vs unit generations for a few eval windows (local debugging only; prints personal data).
 
-Usage: python inspect_outputs.py <03-capabilities dir> <capability> <adapters.npz> [n=8] [gen_tokens=384]
+Usage: [SUBCOR_IDS=id1,id2] [SUBCOR_WHICH=unit] python inspect_outputs.py <03-capabilities dir> <capability> <adapters.npz> [n=8] [gen_tokens=384]
 """
 
 from __future__ import annotations
@@ -37,13 +37,15 @@ def main() -> None:
     ad = {nm: LowRankAdapter(name=f"trained:{nm}", a=z[f"{nm}.a"], b=z[f"{nm}.b"]) for nm in names}
     ev = load(data / cap / "eval.jsonl", 2048)
     random.Random(0).shuffle(ev)
-    for r in ev[:n]:
+    ids = set(filter(None, os.environ.get("SUBCOR_IDS", "").split(",")))
+    pick = [r for r in ev if r["id"] in ids] if ids else ev[:n]
+    for r in pick:
         msgs = r["messages"]
         i = next(j for j, m in enumerate(msgs) if m["role"] == "assistant")
         print("=" * 100)
         print("USER:", str(msgs[i - 1]["content"])[-300:].replace("\n", " "))
         print("REF :", (str(msgs[i].get("content") or "")[:200] + " | calls=" + str(msgs[i].get("tool_calls"))[:300]).replace("\n", " "))
-        for tag in ("base", "unit"):
+        for tag in os.environ.get("SUBCOR_WHICH", "base,unit").split(","):
             if tag == "unit":
                 mount(k, ad)
             tr = k.generate_messages_with_trace(msgs[:i], tools=r["tools"], max_tokens=gen)
