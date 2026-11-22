@@ -148,12 +148,27 @@ def _records(record: Path) -> list[dict[str, Any]]:
 
 
 def _pid_alive(pid: int) -> bool:
-    """True if pid exists and is not a zombie."""
+    """True if pid exists and is not a zombie (Linux /proc + macOS/BSD fallback)."""
+    if Path("/proc").is_dir():
+        try:
+            stat_line = Path(f"/proc/{pid}/stat").read_text()
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        return stat_line.rsplit(")", 1)[1].split()[0] != "Z"
     try:
-        stat_line = Path(f"/proc/{pid}/stat").read_text()
-    except (FileNotFoundError, ProcessLookupError):
+        os.kill(pid, 0)
+    except ProcessLookupError:
         return False
-    return stat_line.rsplit(")", 1)[1].split()[0] != "Z"
+    except PermissionError:
+        return True
+    res = subprocess.run(
+        ["ps", "-o", "state=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    state = res.stdout.strip()
+    return bool(state) and not state.startswith("Z")
 
 
 def _wait_dead(pid: int, timeout: float = 10.0) -> bool:

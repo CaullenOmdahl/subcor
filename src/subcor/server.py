@@ -144,7 +144,7 @@ class ServingKernel(Protocol):
     def train_skill_deltas(
         self,
         *,
-        examples: list[tuple[str | None, str, str]],
+        examples: list[Any],
         rank: int,
         sub1bit_rank: int,
         steps: int,
@@ -175,16 +175,22 @@ class MLXServingAdapter:
         *,
         target_layer_indices: list[int] | None = None,
         target_projections: tuple[str, ...] | None = None,
+        layer_preset: str | None = None,
+        num_layers: int | None = None,
     ) -> None:
         from subcor.backends.mlx_kernel import MLXKernel
 
         indices = (
-            target_layer_indices if target_layer_indices is not None else [18, 19, 20, 21, 22, 23]
+            target_layer_indices
+            if target_layer_indices is not None or layer_preset is not None
+            else [18, 19, 20, 21, 22, 23]
         )
         self._kernel = MLXKernel(
             model_id=model_id,
             target_layer_indices=indices,
             target_projections=target_projections,
+            layer_preset=layer_preset,
+            num_layers=num_layers,
         )
         self.model_id = model_id
         self.target_layers = tuple(sorted(self._kernel.instrumented.keys(), key=_layer_sort_key))
@@ -292,7 +298,7 @@ class MLXServingAdapter:
     def train_skill_deltas(
         self,
         *,
-        examples: list[tuple[str | None, str, str]],
+        examples: list[Any],
         rank: int,
         sub1bit_rank: int,
         steps: int,
@@ -735,6 +741,7 @@ class TenantManager:
         summary: str,
         proposer: str = "tools",
         system_prompt: str | None = None,
+        training_trajectories: list[dict[str, Any]] | None = None,
         eval_cases: list[dict[str, str]] | None = None,
         baseline_cases: list[dict[str, str]] | None = None,
         negative_prompts: list[str] | None = None,
@@ -759,7 +766,13 @@ class TenantManager:
         baseline evaluation, training, and conformance phases rather than starving.
         """
         ctx = self.get_tenant(tenant_id)
-        pairs = ctx.telemetry.verified_distillation_pairs(task_family=task_family)
+        trajectories_list: list[dict[str, Any]] = list(training_trajectories or [])
+        try:
+            pairs = ctx.telemetry.verified_distillation_pairs(task_family=task_family)
+        except VerificationError:
+            if not trajectories_list:
+                raise
+            pairs = []
 
         # Build genuinely held-out target eval & strictly disjoint baseline/negative sets.
         if eval_cases:
@@ -776,9 +789,25 @@ class TenantManager:
             target_eval = list(pairs)
             eval_mode = "in_sample_small_n"
 
-        examples: list[tuple[str | None, str, str]] = [
-            (system_prompt, prompt, target) for prompt, target in train_pairs
-        ]
+        examples: list[Any] = [(system_prompt, prompt, target) for prompt, target in train_pairs]
+        if trajectories_list:
+            examples.extend(trajectories_list)
+        if not examples:
+            raise ValueError(
+                f"No verified training examples available for task_family={task_family!r}"
+            )
+
+        pos_prompts: list[str] = [p for p, _ in train_pairs]
+        for tr in trajectories_list:
+            msgs = tr.get("messages") or []
+            u_prompt = next(
+                (str(m.get("content", "")).strip() for m in msgs if m.get("role") == "user"),
+                "",
+            )
+            if u_prompt:
+                pos_prompts.append(u_prompt)
+        if not pos_prompts:
+            pos_prompts = [p for p, _ in target_eval] or ["Perform the requested skill."]
 
         base_eval = (
             [(c["prompt"], c["expected"]) for c in baseline_cases]
@@ -821,9 +850,7 @@ class TenantManager:
             with self.lock:
                 baseline_before = score_cases(base_eval, sys_prompt=None, use_router=True)
                 target_before = score_cases(target_eval, sys_prompt=system_prompt, use_router=True)
-                pos_embs = np.stack(
-                    [self.kernel.encode_prompt_embedding(p) for p, _ in train_pairs]
-                )
+                pos_embs = np.stack([self.kernel.encode_prompt_embedding(p) for p in pos_prompts])
                 neg_embs = np.stack([self.kernel.encode_prompt_embedding(p) for p in neg_prompts])
 
             # Phase 2: Adapter training (releases lock before/after so chat can interleave).
@@ -885,6 +912,7 @@ class TenantManager:
                     proposer=proposer,
                     system_prompt=system_prompt,
                     training_pairs=tuple((p, t) for p, t in train_pairs),
+                    training_trajectories=tuple(dict(tr) for tr in trajectories_list),
                     eval_cases=tuple({"prompt": p, "expected": e} for p, e in target_eval),
                     baseline_cases=tuple({"prompt": p, "expected": e} for p, e in base_eval),
                     negative_prompts=tuple(neg_prompts),

@@ -406,7 +406,12 @@ def _run_serve(args: argparse.Namespace) -> int:
             else None
         )
         print(f"Loading frozen base kernel '{args.model}' ...")
-        kernel = MLXServingAdapter(model_id=args.model, target_projections=projections)
+        kernel = MLXServingAdapter(
+            model_id=args.model,
+            target_projections=projections,
+            layer_preset=args.layer_preset,
+            num_layers=args.num_layers,
+        )
     try:
         manager = TenantManager(state_dir=state_dir, kernel=kernel, initial_tenants=tenants)
         if supervisor is not None and not supervisor.is_running:
@@ -510,12 +515,15 @@ def _run_bench_cli(args: argparse.Namespace) -> int:
                 model_id=args.model,
                 categories=cats,
                 max_per_category=args.max_per_category,
+                train_source=args.train_source,
                 n_single=args.n_single,
                 n_parallel=args.n_parallel,
                 n_abstain=args.n_abstain,
                 rank=args.rank,
                 steps=args.steps,
                 lr=args.lr,
+                grad_accum=args.grad_accum,
+                max_tokens=args.max_tokens,
                 num_adapted_layers=args.num_layers,
                 projections=projs,
                 seed=args.seed,
@@ -863,6 +871,18 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     serve_cmd.add_argument(
+        "--layer-preset",
+        choices=("default", "last_n", "periodic_full_attn", "every_k"),
+        default=None,
+        help="Multi-layer adaptation preset for MLX backend (e.g. 'periodic_full_attn', 'last_n').",
+    )
+    serve_cmd.add_argument(
+        "--num-layers",
+        type=int,
+        default=None,
+        help="Number of blocks to adapt when --layer-preset is set (e.g. 4).",
+    )
+    serve_cmd.add_argument(
         "--allow-unauthenticated",
         action="store_true",
         help="Explicitly allow binding a non-loopback host without auth (unsafe on shared LANs).",
@@ -950,12 +970,23 @@ def main(argv: list[str] | None = None) -> int:
         default="simple,multiple,parallel,irrelevance",
     )
     b_bfcl.add_argument("--max-per-category", type=int, default=50)
+    b_bfcl.add_argument(
+        "--train-source",
+        choices=("hermes", "bfcl_onpolicy", "bfcl_self_distill"),
+        default="hermes",
+        help=(
+            "Strictly disjoint training source: 'hermes' (cross-dataset), 'bfcl_onpolicy' "
+            "(BFCL[50:] GT), or 'bfcl_self_distill' (on-policy error corrections + base self-replay)."
+        ),
+    )
     b_bfcl.add_argument("--n-single", type=int, default=35)
     b_bfcl.add_argument("--n-parallel", type=int, default=35)
     b_bfcl.add_argument("--n-abstain", type=int, default=30)
     b_bfcl.add_argument("--rank", type=int, default=16)
     b_bfcl.add_argument("--steps", type=int, default=120)
     b_bfcl.add_argument("--lr", type=float, default=2e-4)
+    b_bfcl.add_argument("--grad-accum", type=int, default=4)
+    b_bfcl.add_argument("--max-tokens", type=int, default=512)
     b_bfcl.add_argument("--num-layers", type=int, default=8)
     b_bfcl.add_argument("--projections", type=str, default="mlp.down_proj,self_attn.o_proj")
     b_bfcl.add_argument("--work-dir", type=Path, default=None)

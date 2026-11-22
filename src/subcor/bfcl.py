@@ -339,11 +339,11 @@ def load_hermes_disjoint_training_examples(
                 return tools_out
         return None
 
-    # 1. Single & parallel calls from func-calling-singleturn.json
+    # 1. Single & parallel calls from func-calling-singleturn.json (also collect
+    #    mismatched-tool irrelevance pairs by pairing a prompt with unrelated Hermes tools).
     p_single = hf_hub_download(HERMES_HF_REPO, "func-calling-singleturn.json", repo_type="dataset")
+    parsed_hermes: list[tuple[str, str, list[dict[str, Any]], int]] = []
     for row in json.loads(Path(p_single).read_text(encoding="utf-8")):
-        if len(singles) >= n_single and len(parallels) >= n_parallel:
-            break
         conv = row.get("conversations") or []
         sys_msg = next((c["value"] for c in conv if c.get("from") == "system"), "")
         user_msg = next((c["value"] for c in conv if c.get("from") == "human"), "")
@@ -357,12 +357,43 @@ def load_hermes_disjoint_training_examples(
         if not calls:
             continue
         target_xml = format_qwen35_xml_tool_calls(calls)
+        parsed_hermes.append((user_msg.strip(), target_xml, tools, len(calls)))
         if len(calls) == 1 and len(singles) < n_single:
             singles.append((sys_tool, user_msg.strip(), target_xml, tools))
         elif len(calls) >= 2 and len(parallels) < n_parallel:
             parallels.append((sys_tool, user_msg.strip(), target_xml, tools))
+        if (
+            len(singles) >= n_single
+            and len(parallels) >= n_parallel
+            and len(parsed_hermes) >= n_abstain + 60
+        ):
+            break
 
-    # 2. Irrelevance / no-tool-needed examples from glaive-function-calling-5k.json
+    # 2a. Real mismatched-tool abstention pairs: user asks for task A while only unrelated
+    #     Hermes tools from a distant row are available -> model must abstain cleanly.
+    n_mismatch_target = (n_abstain * 2) // 3
+    used_mismatch: set[str] = set()
+    for idx, (u_prompt, _, orig_tools, _) in enumerate(parsed_hermes):
+        if len(abstains) >= n_mismatch_target:
+            break
+        if u_prompt in used_mismatch:
+            continue
+        other_tools = parsed_hermes[(idx + 53) % len(parsed_hermes)][2]
+        orig_names = {t["function"]["name"] for t in orig_tools}
+        other_names = {t["function"]["name"] for t in other_tools}
+        if orig_names & other_names:
+            continue
+        used_mismatch.add(u_prompt)
+        abstains.append(
+            (
+                sys_tool,
+                u_prompt,
+                "I cannot complete this request because none of the provided tools support it.",
+                other_tools,
+            )
+        )
+
+    # 2b. Conversational no-tool-needed examples from glaive-function-calling-5k.json
     p_glaive = hf_hub_download(
         HERMES_HF_REPO, "glaive-function-calling-5k.json", repo_type="dataset"
     )
@@ -390,18 +421,259 @@ def load_hermes_disjoint_training_examples(
     return combined
 
 
+def _gt_entry_to_call_dict(gt_entry: dict[str, dict[str, list[Any]]]) -> dict[str, Any]:
+    """Convert one BFCL possible_answer ground-truth entry into a canonical OpenAI tool call."""
+    fn_name, params = next(iter(gt_entry.items()))
+    args: dict[str, Any] = {}
+    for k, candidates in params.items():
+        if not candidates:
+            continue
+        first = candidates[0]
+        if first == "" and len(candidates) == 1:
+            continue
+        if first != "":
+            args[k] = first
+    return {"function": {"name": fn_name, "arguments": args}}
+
+
+def load_bfcl_disjoint_onpolicy_examples(
+    *,
+    bfcl_test_cases: list[BFCLCase],
+    categories: tuple[str, ...] = DEFAULT_BFCL_CATEGORIES,
+    start_offset: int = 50,
+    max_per_category: int = 40,
+) -> list[tuple[str | None, str, str, list[dict[str, Any]] | None]]:
+    """Load strictly disjoint on-policy training examples from official BFCL[start_offset:].
+
+    Asserts ZERO case-ID overlap and ZERO prompt overlap with `bfcl_test_cases`.
+    """
+    from huggingface_hub import hf_hub_download
+
+    test_ids = {c.case_id for c in bfcl_test_cases}
+    test_prompts = {
+        m["content"].strip().lower()
+        for c in bfcl_test_cases
+        for m in c.messages
+        if m["role"] == "user"
+    }
+    sys_tool = (
+        "You are a precise function-calling assistant. Call tools ONLY when a provided tool "
+        "matches the user's request. If multiple calls are needed, emit all of them. "
+        "If no provided tool is relevant, reply concisely in plain text without calling any tool."
+    )
+
+    examples: list[tuple[str | None, str, str, list[dict[str, Any]] | None]] = []
+    for cat in categories:
+        q_path = hf_hub_download(BFCL_HF_REPO, f"BFCL_v3_{cat}.json", repo_type="dataset")
+        questions = [
+            json.loads(line)
+            for line in Path(q_path).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        gt_by_id: dict[str, list[dict[str, dict[str, list[Any]]]]] = {}
+        if "irrelevance" not in cat:
+            a_path = hf_hub_download(
+                BFCL_HF_REPO, f"possible_answer/BFCL_v3_{cat}.json", repo_type="dataset"
+            )
+            for line in Path(a_path).read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                gt_by_id[str(row["id"])] = row["ground_truth"]
+
+        count = 0
+        for row in questions[start_offset:]:
+            if count >= max_per_category:
+                break
+            cid = str(row["id"])
+            if cid in test_ids:
+                continue
+            raw_turns = row["question"]
+            turn_msgs = (
+                raw_turns[0] if (raw_turns and isinstance(raw_turns[0], list)) else raw_turns
+            )
+            user_msg = next(
+                (str(m["content"]).strip() for m in reversed(turn_msgs) if m.get("role") == "user"),
+                "",
+            )
+            if not user_msg or user_msg.lower() in test_prompts:
+                continue
+            tools = bfcl_functions_to_openai_tools(row.get("function", []))
+            if "irrelevance" in cat:
+                target = (
+                    "I cannot complete this request because none of the provided tools support it."
+                )
+            else:
+                gt_calls = gt_by_id.get(cid) or []
+                if not gt_calls:
+                    continue
+                target = format_qwen35_xml_tool_calls(
+                    [_gt_entry_to_call_dict(entry) for entry in gt_calls]
+                )
+            examples.append((sys_tool, user_msg, target, tools))
+            count += 1
+
+    train_prompts = {p.strip().lower() for _, p, _, _ in examples}
+    if train_prompts & test_prompts:
+        raise AssertionError("On-policy BFCL train/test prompt leakage detected!")
+    return examples
+
+
+def collect_bfcl_onpolicy_self_distill_examples(
+    *,
+    kernel: Any,
+    bfcl_test_cases: list[BFCLCase],
+    categories: tuple[str, ...] = DEFAULT_BFCL_CATEGORIES,
+    start_offset: int = 50,
+    stream_per_category: int = 25,
+    max_tokens: int = 512,
+    seed: int = 42,
+) -> tuple[list[tuple[str | None, str, str, list[dict[str, Any]] | None]], dict[str, int]]:
+    """Collect true on-policy error corrections + base self-replay KL anchors from BFCL[start_offset:].
+
+    Runs the frozen base kernel on strictly disjoint experience cases (zero case-ID and zero
+    prompt overlap with `bfcl_test_cases`):
+    - On FAILED cases: records the verified ground-truth correction.
+    - On PASSED cases: records the model's OWN raw output as a KL-stabilizing self-replay
+      so LoRA updates fix real failure modes without drifting away from passing behaviors.
+    """
+    from huggingface_hub import hf_hub_download
+
+    test_ids = {c.case_id for c in bfcl_test_cases}
+    test_prompts = {
+        m["content"].strip().lower()
+        for c in bfcl_test_cases
+        for m in c.messages
+        if m["role"] == "user"
+    }
+    sys_tool = (
+        "You are a precise function-calling assistant. Call tools ONLY when a provided tool "
+        "matches the user's request. If multiple calls are needed, emit all of them. "
+        "If no provided tool is relevant, reply concisely in plain text without calling any tool."
+    )
+
+    corrections: list[tuple[str | None, str, str, list[dict[str, Any]] | None]] = []
+    replays_by_cat: dict[str, list[tuple[str | None, str, str, list[dict[str, Any]] | None]]] = {
+        c: [] for c in categories
+    }
+    stats: dict[str, int] = {"stream_total": 0, "failed_corrections": 0, "passed_replays": 0}
+
+    for cat in categories:
+        q_path = hf_hub_download(BFCL_HF_REPO, f"BFCL_v3_{cat}.json", repo_type="dataset")
+        questions = [
+            json.loads(line)
+            for line in Path(q_path).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        gt_by_id: dict[str, list[dict[str, dict[str, list[Any]]]]] = {}
+        if "irrelevance" not in cat:
+            a_path = hf_hub_download(
+                BFCL_HF_REPO, f"possible_answer/BFCL_v3_{cat}.json", repo_type="dataset"
+            )
+            for line in Path(a_path).read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                gt_by_id[str(row["id"])] = row["ground_truth"]
+
+        seen = 0
+        for row in questions[start_offset:]:
+            if seen >= stream_per_category:
+                break
+            cid = str(row["id"])
+            if cid in test_ids:
+                continue
+            raw_turns = row["question"]
+            turn_msgs = (
+                raw_turns[0] if (raw_turns and isinstance(raw_turns[0], list)) else raw_turns
+            )
+            user_msg = next(
+                (str(m["content"]).strip() for m in reversed(turn_msgs) if m.get("role") == "user"),
+                "",
+            )
+            if not user_msg or user_msg.lower() in test_prompts:
+                continue
+            tools = bfcl_functions_to_openai_tools(row.get("function", []))
+            gt = tuple(gt_by_id.get(cid, []))
+            if "irrelevance" not in cat and not gt:
+                continue
+
+            case = BFCLCase(
+                case_id=cid,
+                category=cat,
+                messages=tuple(
+                    {"role": str(m["role"]), "content": str(m["content"])} for m in turn_msgs
+                ),
+                tools=tuple(tools),
+                ground_truth=gt,
+            )
+            seen += 1
+            stats["stream_total"] += 1
+
+            msgs = [{"role": "system", "content": sys_tool}, *[dict(m) for m in case.messages]]
+            tr = kernel.generate_messages_with_trace(
+                msgs,
+                tools=list(case.tools),
+                max_tokens=max_tokens,
+                enable_thinking=False,
+            )
+            passed = grade_bfcl_case(case, list(tr.tool_calls))
+            if passed:
+                raw_out = (tr.raw_response or "").strip()
+                if raw_out and not tr.hit_token_limit and len(raw_out) <= 1600:
+                    replays_by_cat[cat].append((sys_tool, user_msg, raw_out, tools))
+                    stats["passed_replays"] += 1
+            else:
+                if "irrelevance" in cat:
+                    target = (
+                        "None of the available tools can fulfill this request, "
+                        "so I cannot call a tool for it."
+                    )
+                else:
+                    target = format_qwen35_xml_tool_calls(
+                        [_gt_entry_to_call_dict(entry) for entry in gt]
+                    )
+                corrections.append((sys_tool, user_msg, target, tools))
+                stats["failed_corrections"] += 1
+
+    # Build a balanced buffer: 2x verified corrections + equal KL-anchor replays spread evenly across categories.
+    rng = np.random.default_rng(seed)
+    target_replays = max(len(corrections) * 2, 24)
+    per_cat_quota = max(4, target_replays // max(1, len(categories)))
+    chosen_replays: list[tuple[str | None, str, str, list[dict[str, Any]] | None]] = []
+    for cat in categories:
+        pool = list(replays_by_cat[cat])
+        if len(pool) > per_cat_quota:
+            idxs = rng.choice(len(pool), size=per_cat_quota, replace=False)
+            pool = [pool[int(i)] for i in sorted(idxs)]
+        chosen_replays.extend(pool)
+
+    combined = [*corrections, *corrections, *chosen_replays]
+    if combined:
+        order = rng.permutation(len(combined))
+        combined = [combined[int(i)] for i in order]
+
+    train_prompts = {p.strip().lower() for _, p, _, _ in combined}
+    if train_prompts & test_prompts:
+        raise AssertionError("Self-distill BFCL train/test prompt leakage detected!")
+    return combined, stats
+
+
 def run_bfcl_poc(
     *,
     work_dir: Path,
     model_id: str = "mlx-community/Qwen3.5-4B-4bit",
     categories: tuple[str, ...] = DEFAULT_BFCL_CATEGORIES,
     max_per_category: int = 50,
+    train_source: str = "hermes",  # "hermes" | "bfcl_onpolicy" | "bfcl_self_distill"
     n_single: int = 35,
     n_parallel: int = 35,
     n_abstain: int = 30,
     rank: int = 16,
     steps: int = 120,
     lr: float = 2e-4,
+    grad_accum: int = 4,
+    max_tokens: int = 512,
     num_adapted_layers: int = 8,
     projections: tuple[str, ...] = ("mlp.down_proj", "self_attn.o_proj"),
     seed: int = 42,
@@ -415,19 +687,6 @@ def run_bfcl_poc(
 
     work_dir.mkdir(parents=True, exist_ok=True)
     cases = load_bfcl_v3_cases(categories=categories, max_per_category=max_per_category)
-    train_examples = load_hermes_disjoint_training_examples(
-        bfcl_test_cases=cases,
-        n_single=n_single,
-        n_parallel=n_parallel,
-        n_abstain=n_abstain,
-    )
-    if not train_examples:
-        raise ValueError("Loaded 0 disjoint Hermes/Glaive training examples")
-    print(
-        f"[BFCL PoC] Loaded {len(cases)} official BFCL v3 test cases & "
-        f"{len(train_examples)} disjoint training examples (0 overlap).",
-        flush=True,
-    )
 
     # Probe layer count from model config via MLXKernel.
     from huggingface_hub import hf_hub_download
@@ -440,6 +699,43 @@ def run_bfcl_poc(
         model_id=model_id,
         target_layer_indices=target_indices,
         target_projections=projections,
+    )
+    self_distill_stats: dict[str, int] | None = None
+    if train_source == "bfcl_self_distill":
+        train_examples, self_distill_stats = collect_bfcl_onpolicy_self_distill_examples(
+            kernel=kernel,
+            bfcl_test_cases=cases,
+            categories=categories,
+            start_offset=max(max_per_category, 50),
+            stream_per_category=max(n_single, n_parallel, n_abstain),
+            max_tokens=max_tokens,
+            seed=seed,
+        )
+        print(
+            f"[BFCL PoC] On-policy self-distill stream (BFCL[{max(max_per_category, 50)}:], 0 overlap): "
+            f"{self_distill_stats}",
+            flush=True,
+        )
+    elif train_source == "bfcl_onpolicy":
+        train_examples = load_bfcl_disjoint_onpolicy_examples(
+            bfcl_test_cases=cases,
+            categories=categories,
+            start_offset=max(max_per_category, 50),
+            max_per_category=max(n_single, n_parallel, n_abstain),
+        )
+    else:
+        train_examples = load_hermes_disjoint_training_examples(
+            bfcl_test_cases=cases,
+            n_single=n_single,
+            n_parallel=n_parallel,
+            n_abstain=n_abstain,
+        )
+    if not train_examples:
+        raise ValueError(f"Loaded 0 disjoint training examples for train_source={train_source!r}")
+    print(
+        f"[BFCL PoC] Loaded {len(cases)} official BFCL v3 test cases & "
+        f"{len(train_examples)} disjoint {train_source} training examples (0 overlap).",
+        flush=True,
     )
     layer_names = sorted(
         kernel.instrumented.keys(),
@@ -487,7 +783,7 @@ def run_bfcl_poc(
                     router=router,
                     registry=registry,
                     tools=list(case.tools),
-                    max_tokens=192,
+                    max_tokens=max_tokens,
                     enable_thinking=False,
                     top_k=1,
                     seat="tool_calling",
@@ -496,7 +792,7 @@ def run_bfcl_poc(
                 trace = kernel.generate_messages_with_trace(
                     msgs,
                     tools=list(case.tools),
-                    max_tokens=192,
+                    max_tokens=max_tokens,
                     enable_thinking=False,
                 )
                 decision = RoutingDecision(selected_units=(), scores={}, thresholds={})
@@ -604,6 +900,7 @@ def run_bfcl_poc(
         rank=rank,
         steps=steps,
         lr=lr,
+        grad_accum=grad_accum,
         binary_ste=False,
         seed=seed,
     )
@@ -651,7 +948,7 @@ def run_bfcl_poc(
             unit_id=uid,
             version="1.0.0",
             title=f"BFCL Tool-Calling Skill Unit ({enc_label})",
-            summary=f"Disjoint Hermes/Glaive tool-calling unit on {model_id}",
+            summary=f"Disjoint {train_source} tool-calling unit on {model_id}",
             proposer="tools",
             mode=AdaptationMode.DYNAMIC_EXPANSION_FP32,
             deltas=deltas,
@@ -712,12 +1009,17 @@ def run_bfcl_poc(
 
     return {
         "model_id": model_id,
+        "train_source": train_source,
         "categories": list(categories),
         "total_bfcl_test_cases": len(cases),
         "disjoint_train_examples": len(train_examples),
         "adapted_layers": layer_names,
         "rank": rank,
         "steps": steps,
+        "grad_accum": grad_accum,
+        "max_tokens": max_tokens,
+        "lr": lr,
+        "self_distill_stats": self_distill_stats,
         "train_seconds": round(train_sec, 1),
         "zero_perturbation_max_logit_diff": zero_diff,
         "initial_loss": round(float(np.mean(losses[:5])), 4),
