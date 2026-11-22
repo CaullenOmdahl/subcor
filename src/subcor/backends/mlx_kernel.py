@@ -22,6 +22,7 @@ import json
 import logging
 import math
 import time
+from collections import OrderedDict
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1062,6 +1063,16 @@ class MLXKernel:
             messages = [dict(m) for m in raw_msgs]
             if default_system_prompt and messages[0].get("role") != "system":
                 messages.insert(0, {"role": "system", "content": default_system_prompt})
+            # Trim any trailing non-assistant turns (e.g., trailing tool output or
+            # unanswered user turn) before formatting & max_seq_len checks so
+            # unsupervised tail tokens never waste compute or falsely trigger too_long.
+            last_asst_idx = -1
+            for idx, msg in enumerate(messages):
+                if msg.get("role") == "assistant":
+                    last_asst_idx = idx
+            if last_asst_idx < 0:
+                return None, "empty_target"
+            messages = messages[: last_asst_idx + 1]
             tools = item.get("tools")
 
             full_text = self.format_messages(
@@ -1174,6 +1185,7 @@ class MLXKernel:
         max_seq_len: int = 2048,
         grad_accum: int = 1,
         grad_checkpoint: bool | None = None,
+        max_prefix_cache_mb: float = 512.0,
         seed: int = 42,
     ) -> tuple[dict[str, LowRankAdapter], list[float], float]:
         """Function-preserving LoRA expansion + Apple Silicon GPU QLoRA adaptation.
@@ -1277,7 +1289,8 @@ class MLXKernel:
                 f"dropped_empty_target={dropped_empty_target})"
             )
 
-        # Determine if exact frozen-prefix caching + target-sliced lm_head is supported.
+        # Determine if structured layer-by-layer forward + target-sliced lm_head is supported
+        # (works even when first_trainable_idx == 0!) and whether a frozen prefix exists.
         layer_indices = [
             int(n.split(".")[1])
             for n in layer_names
@@ -1286,9 +1299,8 @@ class MLXKernel:
         first_trainable_idx = min(layer_indices) if layer_indices else 0
         inner_model = getattr(self.model, "model", None)
         lm_owner = getattr(self.model, "language_model", self.model)
-        can_use_prefix_cache = (
-            first_trainable_idx > 0
-            and inner_model is not None
+        can_use_structured_forward = (
+            inner_model is not None
             and hasattr(inner_model, "embed_tokens")
             and hasattr(inner_model, "layers")
             and hasattr(inner_model, "norm")
@@ -1297,10 +1309,11 @@ class MLXKernel:
                 or getattr(getattr(lm_owner, "args", None), "tie_word_embeddings", False)
             )
         )
+        has_frozen_prefix = can_use_structured_forward and first_trainable_idx > 0
 
         tail_layers = (
             list(inner_model.layers[first_trainable_idx:])
-            if (can_use_prefix_cache and inner_model is not None)
+            if (can_use_structured_forward and inner_model is not None)
             else []
         )
         use_grad_checkpoint = (
@@ -1308,7 +1321,7 @@ class MLXKernel:
         )
         has_linear_in_tail = (
             any(getattr(lyr, "is_linear", False) for lyr in tail_layers)
-            if can_use_prefix_cache
+            if can_use_structured_forward
             else (
                 any(getattr(lyr, "is_linear", False) for lyr in inner_model.layers)
                 if inner_model is not None and hasattr(inner_model, "layers")
@@ -1316,30 +1329,76 @@ class MLXKernel:
             )
         )
 
+        accum = max(1, int(grad_accum))
+        total_microsteps = max(1, steps * accum)
+
+        # Reset peak memory BEFORE any prefix precomputation so peak_memory_gb reflects true
+        # end-to-end training memory (including any cached prefix tensors).
+        mx.reset_peak_memory()
+
+        def _compute_frozen_prefix(x_ids: mx.array) -> mx.array:
+            assert inner_model is not None
+            h_pref = inner_model.embed_tokens(x_ids)
+            fa_mask = create_attention_mask(h_pref, None)
+            ssm_mask = create_ssm_mask(h_pref, None) if hasattr(inner_model, "ssm_idx") else None
+            for layer in inner_model.layers[:first_trainable_idx]:
+                mask = ssm_mask if getattr(layer, "is_linear", False) else fa_mask
+                h_pref = layer(h_pref, mask=mask, cache=None)
+            h_pref = mx.stop_gradient(h_pref)
+            mx.eval(h_pref)
+            return h_pref
+
+        # Select bounded frozen-prefix caching policy ("full" | "lru" | "on_the_fly" | "none"):
+        # never materialize unbounded prefix tensors in RAM on large datasets.
+        prefix_cache_mode = "none"
+        budget_bytes = max(0, int(float(max_prefix_cache_mb) * 1024.0 * 1024.0))
         cached_examples: list[tuple[mx.array, mx.array, mx.array]] = []
-        if can_use_prefix_cache:
+        lru_cache: OrderedDict[int, tuple[mx.array, int]] = OrderedDict()
+        lru_cur_bytes = 0
+        max_cache_bytes = 0
+
+        if has_frozen_prefix:
             assert inner_model is not None
             self.model.eval()
-            for x_ids, y_target, loss_positions in raw_examples:
-                h = inner_model.embed_tokens(x_ids)
-                fa_mask = create_attention_mask(h, None)
-                ssm_mask = create_ssm_mask(h, None) if hasattr(inner_model, "ssm_idx") else None
-                for layer in inner_model.layers[:first_trainable_idx]:
-                    mask = ssm_mask if getattr(layer, "is_linear", False) else fa_mask
-                    h = layer(h, mask=mask, cache=None)
-                mx.eval(h)
-                cached_examples.append((h, y_target, loss_positions))
-            mx.clear_cache()
+            if budget_bytes <= 0:
+                prefix_cache_mode = "on_the_fly"
+            else:
+                probe_x = raw_examples[0][0]
+                probe_h = _compute_frozen_prefix(probe_x)
+                bytes_per_tok = probe_h.nbytes / max(1, int(probe_x.shape[1]))
+                estimated_full_bytes = int(
+                    sum(int(ex[0].shape[1]) for ex in raw_examples) * bytes_per_tok
+                )
+                if estimated_full_bytes <= budget_bytes and len(raw_examples) <= total_microsteps:
+                    prefix_cache_mode = "full"
+                    cached_examples.append((probe_h, raw_examples[0][1], raw_examples[0][2]))
+                    max_cache_bytes = probe_h.nbytes
+                    for x_ids, y_target, loss_positions in raw_examples[1:]:
+                        h_pref = _compute_frozen_prefix(x_ids)
+                        max_cache_bytes += h_pref.nbytes
+                        cached_examples.append((h_pref, y_target, loss_positions))
+                    mx.clear_cache()
+                else:
+                    prefix_cache_mode = "lru"
+                    # Seed LRU with index 0 if it fits in the budget; otherwise discard.
+                    if probe_h.nbytes <= budget_bytes:
+                        lru_cache[0] = (probe_h, probe_h.nbytes)
+                        lru_cur_bytes = probe_h.nbytes
+                        max_cache_bytes = lru_cur_bytes
+                    del probe_h
+                    mx.clear_cache()
+
+        if can_use_structured_forward:
 
             def loss_fn(
                 model: nn.Module,
-                h_prefix: mx.array,
+                inp: mx.array,
                 y_target: mx.array,
                 loss_positions: mx.array,
             ) -> mx.array:
                 inner = model.model
                 lm = getattr(model, "language_model", model)
-                h = h_prefix
+                h = inp if has_frozen_prefix else inner.embed_tokens(inp)
                 fa_mask = create_attention_mask(h, None)
                 ssm_mask = create_ssm_mask(h, None) if hasattr(inner, "ssm_idx") else None
                 for layer in inner.layers[first_trainable_idx:]:
@@ -1366,7 +1425,6 @@ class MLXKernel:
                     logits = lm.lm_head(h_sel).astype(mx.float32)
                 return mx.mean(nn.losses.cross_entropy(logits, y_target, reduction="none"))
         else:
-            cached_examples = raw_examples
 
             def loss_fn(
                 model: nn.Module,
@@ -1386,8 +1444,8 @@ class MLXKernel:
 
         losses: list[float] = []
         rng = np.random.default_rng(seed)
-        order = np.arange(len(cached_examples))
-        accum = max(1, int(grad_accum))
+        num_examples = len(raw_examples)
+        order = np.arange(num_examples)
 
         # Minimally scope train() ONLY to linear-attention (GatedDeltaNet) layers inside the
         # differentiable tail; all prefix & full-attention layers keep fast Metal eval() kernels.
@@ -1395,7 +1453,7 @@ class MLXKernel:
         if has_linear_in_tail and inner_model is not None and hasattr(inner_model, "layers"):
             scoped_layers = (
                 inner_model.layers[first_trainable_idx:]
-                if can_use_prefix_cache
+                if can_use_structured_forward
                 else inner_model.layers
             )
             for lyr in scoped_layers:
@@ -1421,14 +1479,34 @@ class MLXKernel:
         ex_cursor = 0
 
         def _next_example() -> tuple[mx.array, mx.array, mx.array]:
-            nonlocal ex_cursor
-            if ex_cursor % len(cached_examples) == 0:
+            nonlocal ex_cursor, lru_cur_bytes, max_cache_bytes
+            if ex_cursor % num_examples == 0:
                 rng.shuffle(order)
-            idx = int(order[ex_cursor % len(cached_examples)])
+            idx = int(order[ex_cursor % num_examples])
             ex_cursor += 1
-            return cached_examples[idx]
 
-        mx.reset_peak_memory()
+            if prefix_cache_mode == "full":
+                return cached_examples[idx]
+            x_ids, y_target, loss_positions = raw_examples[idx]
+            if prefix_cache_mode == "on_the_fly":
+                return _compute_frozen_prefix(x_ids), y_target, loss_positions
+            if prefix_cache_mode == "lru":
+                hit = lru_cache.get(idx)
+                if hit is not None:
+                    lru_cache.move_to_end(idx)
+                    return hit[0], y_target, loss_positions
+                h_pref = _compute_frozen_prefix(x_ids)
+                nbytes = h_pref.nbytes
+                if nbytes <= budget_bytes:
+                    while lru_cache and lru_cur_bytes + nbytes > budget_bytes:
+                        _, (_, evicted_bytes) = lru_cache.popitem(last=False)
+                        lru_cur_bytes -= evicted_bytes
+                    lru_cache[idx] = (h_pref, nbytes)
+                    lru_cur_bytes += nbytes
+                    max_cache_bytes = max(max_cache_bytes, lru_cur_bytes)
+                return h_pref, y_target, loss_positions
+            return x_ids, y_target, loss_positions
+
         t_loop0 = time.perf_counter()
         try:
             with _chunked_gated_delta_context(enabled=has_linear_in_tail) as chunked_gdn_active:
@@ -1505,6 +1583,8 @@ class MLXKernel:
                 "grad_accum": accum,
                 "grad_checkpoint": use_grad_checkpoint,
                 "chunked_gated_delta": chunked_gdn_active,
+                "prefix_cache_mode": prefix_cache_mode,
+                "prefix_cache_mb": round(max_cache_bytes / (1024.0 * 1024.0), 4),
                 "peak_memory_gb": round(peak_gb, 3),
                 "train_seconds": round(elapsed, 3),
                 "mean_step_seconds": round(elapsed / max(1, len(losses)), 4),
@@ -1516,6 +1596,8 @@ class MLXKernel:
                     adapter_name=f"trained:{name}"
                 )
         finally:
+            cached_examples.clear()
+            lru_cache.clear()
             for name in layer_names:
                 self.instrumented[name].detach_trainable_lora()
             self.model.freeze()

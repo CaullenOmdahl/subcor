@@ -579,3 +579,160 @@ def test_skill_spec_multiturn_trajectories_roundtrip_and_recompile(tmp_path: Pat
     saved_spec = dest_mgr.get_tenant("acme").registry.load_skill_spec("mt-skill")
     assert saved_spec is not None
     assert saved_spec.training_trajectories == (traj,)
+
+
+def test_trailing_non_assistant_turns_trimmed_before_max_seq_len() -> None:
+    """Issue #28: trailing tool/user turns are trimmed before formatting & max_seq_len checks."""
+    kernel = _make_tiny_kernel([3, 4])
+    base_msgs = [
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Check status."},
+        {"role": "assistant", "content": "Running check now."},
+    ]
+    with_trailing_tool = {
+        "messages": [
+            *base_msgs,
+            {"role": "tool", "name": "status", "content": " ".join(f"log{i}" for i in range(120))},
+        ]
+    }
+    with_trailing_user = {
+        "messages": [
+            *base_msgs,
+            {
+                "role": "user",
+                "content": "Unanswered follow-up " + " ".join(f"u{i}" for i in range(80)),
+            },
+        ]
+    }
+    clean_traj = {"messages": base_msgs}
+
+    ex_clean, r_clean = kernel._tokenize_training_example(
+        clean_traj, default_system_prompt=None, enable_thinking=False, max_seq_len=64
+    )
+    ex_tool, r_tool = kernel._tokenize_training_example(
+        with_trailing_tool, default_system_prompt=None, enable_thinking=False, max_seq_len=64
+    )
+    ex_user, r_user = kernel._tokenize_training_example(
+        with_trailing_user, default_system_prompt=None, enable_thinking=False, max_seq_len=64
+    )
+    # Without trimming, with_trailing_tool (~140 tokens) would have been dropped as too_long!
+    assert r_clean == "ok" and r_tool == "ok" and r_user == "ok"
+    assert ex_clean is not None and ex_tool is not None and ex_user is not None
+    for ex in (ex_tool, ex_user):
+        assert np.array_equal(np.array(ex[0]), np.array(ex_clean[0]))
+        assert np.array_equal(np.array(ex[1]), np.array(ex_clean[1]))
+        assert np.array_equal(np.array(ex[2]), np.array(ex_clean[2]))
+
+
+def test_first_trainable_idx_zero_uses_checkpoint_and_sliced_lm_head() -> None:
+    """Issue #29: adapting layer 0 still uses mx.checkpoint and target-sliced lm_head."""
+    traj = {
+        "messages": [
+            {"role": "system", "content": "SYS_A SYS_B SYS_C SYS_D"},
+            {"role": "user", "content": "USER_1 USER_2 USER_3 USER_4 USER_5"},
+            {"role": "assistant", "content": "OK_DONE"},
+        ]
+    }
+    k_ckpt = _make_tiny_kernel([0, 4])
+    k_plain = _make_tiny_kernel([0, 4])
+    tok_ex, reason = k_ckpt._tokenize_training_example(
+        traj, default_system_prompt=None, enable_thinking=False, max_seq_len=128
+    )
+    assert reason == "ok" and tok_ex is not None
+    full_seq_len = int(tok_ex[0].shape[1])
+    num_loss_pos = int(tok_ex[2].shape[0])
+    assert num_loss_pos < full_seq_len
+
+    seen_lm_head_seq_lens: list[int] = []
+    orig_lm_head = k_ckpt.model.lm_head
+
+    class _SpyLMHead(nn.Module):
+        def __init__(self, inner: nn.Module) -> None:
+            super().__init__()
+            self.inner = inner
+
+        def __call__(self, x: mx.array) -> mx.array:
+            seen_lm_head_seq_lens.append(int(x.shape[1]))
+            return self.inner(x)
+
+    k_ckpt.model.lm_head = _SpyLMHead(orig_lm_head)
+    k_ckpt.model.freeze()
+
+    names = sorted(k_ckpt.instrumented.keys())
+    a_ckpt, l_ckpt, z_ckpt = k_ckpt.train_qlora_adapters(
+        [traj], layer_names=names, rank=4, steps=4, lr=2e-3, grad_checkpoint=None, seed=21
+    )
+    a_plain, l_plain, z_plain = k_plain.train_qlora_adapters(
+        [traj], layer_names=names, rank=4, steps=4, lr=2e-3, grad_checkpoint=False, seed=21
+    )
+
+    assert z_ckpt == 0.0 and z_plain == 0.0
+    assert k_ckpt.last_train_stats["grad_checkpoint"] is True
+    assert k_ckpt.last_train_stats["prefix_cache_mode"] == "none"
+    # During training steps, lm_head MUST receive only sliced num_loss_pos tokens (after the 2
+    # probe_logits calls which run full prompt length).
+    train_lm_lens = seen_lm_head_seq_lens[2:]
+    assert train_lm_lens and all(seq_l == num_loss_pos for seq_l in train_lm_lens)
+    assert np.allclose(l_ckpt, l_plain, atol=1e-5)
+    for name in names:
+        assert np.allclose(a_ckpt[name].delta_matrix(), a_plain[name].delta_matrix(), atol=1e-5)
+
+
+def test_prefix_cache_modes_gradient_equivalence_and_memory_cap() -> None:
+    """Issue #27: full, lru, and on_the_fly prefix modes yield identical updates & respect cap."""
+    trajs = [
+        {
+            "messages": [
+                {"role": "user", "content": f"Prompt {i} alpha beta gamma delta"},
+                {"role": "assistant", "content": f"Answer {i} ok"},
+            ]
+        }
+        for i in range(6)
+    ]
+
+    k_full = _make_tiny_kernel([3, 4])
+    k_lru = _make_tiny_kernel([3, 4])
+    k_otf = _make_tiny_kernel([3, 4])
+    names = sorted(k_full.instrumented.keys())
+
+    a_full, l_full, _ = k_full.train_qlora_adapters(
+        trajs, layer_names=names, rank=4, steps=8, lr=2e-3, max_prefix_cache_mb=64.0, seed=9
+    )
+    # Tight budget (~2 KiB): holds ~1-2 tiny prefix tensors -> forces bounded LRU eviction!
+    a_lru, l_lru, _ = k_lru.train_qlora_adapters(
+        trajs, layer_names=names, rank=4, steps=8, lr=2e-3, max_prefix_cache_mb=0.002, seed=9
+    )
+    a_otf, l_otf, _ = k_otf.train_qlora_adapters(
+        trajs, layer_names=names, rank=4, steps=8, lr=2e-3, max_prefix_cache_mb=0.0, seed=9
+    )
+
+    assert k_full.last_train_stats["prefix_cache_mode"] == "full"
+    assert k_lru.last_train_stats["prefix_cache_mode"] == "lru"
+    assert k_lru.last_train_stats["prefix_cache_mb"] <= 0.002 + 1e-6
+    assert k_otf.last_train_stats["prefix_cache_mode"] == "on_the_fly"
+    assert k_otf.last_train_stats["prefix_cache_mb"] == 0.0
+
+    assert np.allclose(l_full, l_lru, atol=1e-5)
+    assert np.allclose(l_full, l_otf, atol=1e-5)
+    for name in names:
+        assert np.allclose(a_full[name].delta_matrix(), a_lru[name].delta_matrix(), atol=1e-5)
+        assert np.allclose(a_full[name].delta_matrix(), a_otf[name].delta_matrix(), atol=1e-5)
+
+    # Large dataset count (> steps * grad_accum) automatically switches to bounded LRU instead
+    # of pre-computing all 120 prefixes up front.
+    many_trajs = [
+        {
+            "messages": [
+                {"role": "user", "content": f"Large set example {i} payload"},
+                {"role": "assistant", "content": f"Reply {i}"},
+            ]
+        }
+        for i in range(120)
+    ]
+    k_many = _make_tiny_kernel([3, 4])
+    k_many.train_qlora_adapters(
+        many_trajs, layer_names=names, rank=4, steps=4, lr=2e-3, max_prefix_cache_mb=0.005, seed=9
+    )
+    assert k_many.last_train_stats["kept"] == 120
+    assert k_many.last_train_stats["prefix_cache_mode"] == "lru"
+    assert k_many.last_train_stats["prefix_cache_mb"] <= 0.005 + 1e-6
