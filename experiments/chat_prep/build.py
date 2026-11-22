@@ -135,11 +135,26 @@ def to_msgs(step: dict, results: list[dict]) -> list[dict]:
                   for r in results]
 
 
+_INTERNAL_TAGS = ("codex_internal_context", "goal_round", "goal_complete", "system-reminder", "environment_context",
+                  "user_instructions", "permissions", "turn_aborted", "task-notification", "skill_content",
+                  "local-command-stdout", "local-command-caveat", "command-name", "command-message", "command-args")
+_INTERNAL_RE = re.compile(r"<(%s)\b[^>]*>.*?(</\1>|\Z)" % "|".join(map(re.escape, _INTERNAL_TAGS)), re.S)
+
+
+def clean_user(text: str) -> str:
+    """Drop harness-injected blocks (Codex goal context, reminders, ...) from a user message."""
+    return re.sub(r"\n{3,}", "\n\n", _INTERNAL_RE.sub("", text)).strip()
+
+
 def turns_of(session: dict) -> list[dict]:
     turns, cur = [], None
     for e in session["events"]:
         if e["role"] == "user":
-            cur = {"user": e["content"], "ts": e.get("ts"), "steps": [], "interrupted": False}
+            text = clean_user(e["content"])
+            if not text:  # harness-only message: its steps have no user request, drop them
+                cur = None
+                continue
+            cur = {"user": text, "ts": e.get("ts"), "steps": [], "interrupted": False}
             turns.append(cur)
         elif e["role"] == "break":
             if cur is not None and e["reason"] in ("user_interrupt", "harness_error"):
@@ -193,16 +208,23 @@ def windows_for(turn: dict, prompt: str, signal: str, tok: Tok, drops: Counter) 
         prompt = tok.truncate(prompt, MAX_PROMPT_TOKENS - 60)
     used = {c["name"] for x in steps if x for c in x[0]["a"]["tool_calls"]}
     wtools = tools_for(used, prompt[:200])
-    out, i, done_cmds = [], 0, []
+    out, i, done = [], 0, {"cmds": 0, "edits": 0, "reads": 0, "other": 0, "files": []}
     while i < len(steps):
         if steps[i] is None:
-            done_cmds.append("other_tool(...)")
+            done["other"] += 1
             i += 1
             continue
         note = ""
         if i > 0:
-            recent = "; ".join(done_cmds[-5:])[:600]
-            note = f"\n\n[Continuing this task. {i} earlier steps done; most recent: {recent}]"
+            # plain prose only: no call syntax the model could learn to echo into its own commands
+            def _n(v: int, one: str, many: str) -> str:
+                return f"{v} {one if v == 1 else many}"
+            parts = [_n(v, one, many) for v, one, many in (
+                (done["cmds"], "shell command", "shell commands"), (done["edits"], "file edit", "file edits"),
+                (done["reads"], "file read", "file reads"), (done["other"], "other action", "other actions")) if v]
+            files = list(dict.fromkeys(done["files"]))[-4:]
+            note = ("\n\n(Earlier in this task, already done: " + ", ".join(parts) + "."
+                    + (f" Files involved: {', '.join(files)}." if files else "") + ")")
         msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt + note}]
         j, n_tok = i, None
         while j < len(steps) and steps[j] is not None:
@@ -231,8 +253,12 @@ def windows_for(turn: dict, prompt: str, signal: str, tok: Tok, drops: Counter) 
             out.append((msgs, sig, n_tok, wtools))
         for s, _ in steps[i:j]:
             for c in s["a"]["tool_calls"]:
-                a = c["arguments"]
-                done_cmds.append(f"{c['name']}({(a.get('command') or a.get('path') or a.get('query') or '')[:80]})")
+                kind = {"run_command": "cmds", "read_file": "reads"}.get(c["name"])
+                kind = kind or ("edits" if c["name"] in EDIT_TOOLS else "other")
+                done[kind] += 1
+                path = c["arguments"].get("path")
+                if path and kind in ("edits", "reads"):
+                    done["files"].append(path.rsplit("/", 2)[-1] if path.count("/") > 2 else path)
         i = j
     return out
 
@@ -386,7 +412,7 @@ def main() -> None:
             pairs = sorted(set(pairs), key=lambda x: -len(x[0]))
             if fp.suffix == ".jsonl":
                 lines = [json.dumps(scrub.walk(json.loads(ln), lambda t, pr=pairs: scrub.scrub_string(
-                    t, pr, [], post, {})), ensure_ascii=False) for ln in fp.read_text().splitlines()]
+                    t, pr, [], post, {})), ensure_ascii=False) for ln in fp.read_text().split("\n") if ln.strip()]
                 fp.write_text("\n".join(lines) + "\n")
             else:
                 fp.write_text(json.dumps(scrub.walk(json.loads(fp.read_text()), lambda t, pr=pairs: scrub.scrub_string(

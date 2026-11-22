@@ -106,6 +106,10 @@ def next_action(k: TorchKernel, recs: list[dict], max_tokens: int = 192) -> list
             "args_keys": got_name == ref_name and (ref_name is None or (
                 got_args is not None and set(got_args) == set(ref_args or {}))),
             "hit_limit": bool(tr.hit_token_limit),
+            "repetition": round(float(tr.repetition_ratio), 3),
+            # runaway output: cut off by the cap, or heavily repeated text
+            "loop": bool(tr.hit_token_limit) or float(tr.repetition_ratio) >= 0.3,
+            "n_calls": len(tr.tool_calls),
         })
     return out
 
@@ -138,7 +142,7 @@ def nll_compare(base: list[dict], unit: list[dict], seed: int = 0) -> dict:
 def summarize(items: list[dict]) -> dict:
     n = max(1, len(items))
     return {"n": len(items), **{k: round(sum(x[k] for x in items) / n, 3)
-                                for k in ("name_match", "args_keys", "args_exact", "valid_name", "hit_limit")}}
+                                for k in ("name_match", "args_keys", "args_exact", "valid_name", "hit_limit", "loop")}}
 
 
 def mount(k: TorchKernel, adapters: dict) -> None:
@@ -172,6 +176,7 @@ def main() -> None:
     ap.add_argument("--n-cross", type=int, default=100, help="eval windows per OTHER capability (regression check)")
     ap.add_argument("--adapters", type=Path, help="evaluate a saved adapters.npz instead of training")
     ap.add_argument("--tag", default="", help="suffix for the output directory")
+    ap.add_argument("--gen-tokens", type=int, default=192, help="generation cap for the next-action check")
     a = ap.parse_args()
 
     d = a.data / a.capability
@@ -192,7 +197,8 @@ def main() -> None:
     print(f"loaded {a.model} in {time.perf_counter() - t0:.0f}s; {len(layer_names)} adapted layers; "
           f"train={len(train)} eval={len(ev)}", flush=True)
 
-    others = [c for c in ("tool-calling", "code-writing", "agentic-decisions") if c != a.capability]
+    others = [c for c in ("tool-calling", "code-writing", "agentic-decisions")
+              if c != a.capability] if a.n_cross > 0 else []
     cross = {}
     for c in others:
         ce = load(a.data / c / "eval.jsonl", a.max_seq_len)
@@ -204,7 +210,7 @@ def main() -> None:
 
     def evaluate(tag: str) -> dict:
         t0 = time.perf_counter()
-        r = {"nll": eval_nll(k, ev_nll, a.max_seq_len), "next": next_action(k, ev_gen),
+        r = {"nll": eval_nll(k, ev_nll, a.max_seq_len), "next": next_action(k, ev_gen, a.gen_tokens),
              "cross_nll": {c: eval_nll(k, v, a.max_seq_len) for c, v in cross.items()}}
         print(f"{tag}: nll={sum(x['nll_sum'] for x in r['nll']) / sum(x['n_tok'] for x in r['nll']):.4f} "
               f"next={summarize(r['next'])} ({time.perf_counter() - t0:.0f}s)", flush=True)
@@ -242,6 +248,8 @@ def main() -> None:
         "next_base": summarize(base["next"]), "next_unit": summarize(unit["next"]),
         "mcnemar_name": mcnemar([b["name_match"] for b, _ in pairs], [u["name_match"] for _, u in pairs]),
         "mcnemar_args_exact": mcnemar([b["args_exact"] for b, _ in pairs], [u["args_exact"] for _, u in pairs]),
+        "mcnemar_args_keys": mcnemar([b["args_keys"] for b, _ in pairs], [u["args_keys"] for _, u in pairs]),
+        "mcnemar_no_loop": mcnemar([not b["loop"] for b, _ in pairs], [not u["loop"] for _, u in pairs]),
         "cross_nll": {c: nll_compare(base["cross_nll"][c], unit["cross_nll"][c], a.seed) for c in cross},
     }
     print("summary: " + json.dumps(res["summary"]), flush=True)
