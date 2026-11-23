@@ -1,0 +1,121 @@
+{
+  "mode": "edge",
+  "build": "version: 1.0.0-dev (build 12359, commit b1b770d90d)",
+  "args": {
+    "mode": "edge",
+    "gguf": "None",
+    "ctx": "8192",
+    "ngl": "99",
+    "np": "None",
+    "extra": "[]",
+    "port": "8197",
+    "sizes": "[4000, 16000, 30000]",
+    "reps": "2",
+    "chunk_chars": "6000",
+    "rank": "16",
+    "std": "0.01",
+    "compare": "None",
+    "edge_prompt_tokens": "4000",
+    "workdir": "None"
+  },
+  "rows": [
+    {
+      "config": "0.8b-full",
+      "gguf": "Qwen3.5-0.8B-Q4_K_M.gguf",
+      "ngl": 99,
+      "extra": [],
+      "vram_loaded_gib": 0.709991455078125,
+      "vram_peak_gib": 1.1828575134277344,
+      "cold_prompt_tokens": 3114,
+      "cold_prompt_ms": 347.783,
+      "cold_wall_s": 0.4559390710055595,
+      "decode_tok_s": 211.3290533696665
+    },
+    {
+      "config": "4b-full",
+      "gguf": "Qwen3.5-4B-Q4_K_M.gguf",
+      "ngl": 99,
+      "extra": [],
+      "vram_loaded_gib": 3.0800857543945312,
+      "vram_peak_gib": 3.5478172302246094,
+      "cold_prompt_tokens": 3114,
+      "cold_prompt_ms": 1580.3,
+      "cold_wall_s": 1.8551877990103094,
+      "decode_tok_s": 100.26122749507506
+    },
+    {
+      "config": "4b-ngl24",
+      "gguf": "Qwen3.5-4B-Q4_K_M.gguf",
+      "ngl": 24,
+      "extra": [],
+      "vram_loaded_gib": 2.3946609497070312,
+      "vram_peak_gib": 2.8265838623046875,
+      "cold_prompt_tokens": 3114,
+      "cold_prompt_ms": 2075.93,
+      "cold_wall_s": 2.4791526430053636,
+      "decode_tok_s": 26.3279141709998
+    },
+    {
+      "config": "4b-ngl16",
+      "gguf": "Qwen3.5-4B-Q4_K_M.gguf",
+      "ngl": 16,
+      "extra": [],
+      "vram_loaded_gib": 1.7737007141113281,
+      "vram_peak_gib": 2.1978302001953125,
+      "cold_prompt_tokens": 3114,
+      "cold_prompt_ms": 2610.643,
+      "cold_wall_s": 3.0746517579973442,
+      "decode_tok_s": 18.7022918051379
+    },
+    {
+      "config": "4b-full-kv-cpu",
+      "gguf": "Qwen3.5-4B-Q4_K_M.gguf",
+      "ngl": 99,
+      "extra": [
+        "--no-kv-offload"
+      ],
+      "vram_loaded_gib": 2.637523651123047,
+      "vram_peak_gib": 3.060565948486328,
+      "cold_prompt_tokens": 3114,
+      "cold_prompt_ms": 1872.777,
+      "cold_wall_s": 2.2346890680055367,
+      "decode_tok_s": 19.858534317602967
+    },
+    {
+      "config": "9b-full",
+      "gguf": "Qwen3.5-9B-Q4_K_M.gguf",
+      "ngl": 99,
+      "extra": [],
+      "vram_loaded_gib": 5.318202972412109,
+      "vram_peak_gib": 5.766334533691406,
+      "cold_prompt_tokens": 3114,
+      "cold_prompt_ms": 2801.037,
+      "cold_wall_s": 3.299105772995972,
+      "decode_tok_s": 67.34136045857362
+    },
+    {
+      "config": "9b-ngl20",
+      "gguf": "Qwen3.5-9B-Q4_K_M.gguf",
+      "ngl": 20,
+      "extra": [],
+      "vram_loaded_gib": 3.5236473083496094,
+      "vram_peak_gib": 3.946502685546875,
+      "cold_prompt_tokens": 3114,
+      "cold_prompt_ms": 6338.017,
+      "cold_wall_s": 7.280548427996109,
+      "decode_tok_s": 13.68154358167526
+    },
+    {
+      "config": "9b-ngl12",
+      "gguf": "Qwen3.5-9B-Q4_K_M.gguf",
+      "ngl": 12,
+      "extra": [],
+      "vram_loaded_gib": 2.443592071533203,
+      "vram_peak_gib": 2.8587303161621094,
+      "cold_prompt_tokens": 3114,
+      "cold_prompt_ms": 6663.88,
+      "cold_wall_s": 7.674490321005578,
+      "decode_tok_s": 10.476799128330313
+    }
+  ]
+}

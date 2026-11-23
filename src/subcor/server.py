@@ -180,6 +180,9 @@ class InferenceResult:
     tool_calls: tuple[dict[str, Any], ...] = ()
     token_logprobs: tuple[float, ...] = ()
     confidence: TurnConfidence | None = None
+    # llama-server `timings` (cache_n, prompt_n, prompt_ms, predicted_n, predicted_ms) when
+    # the backend reports them; `cache_n` shows how much of the prompt was reused.
+    server_timings: dict[str, Any] | None = None
 
 
 class ServingKernel(Protocol):

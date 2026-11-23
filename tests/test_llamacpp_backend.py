@@ -115,6 +115,13 @@ class _MockLlamaHandler(BaseHTTPRequestHandler):
                         }
                     ],
                     "usage": {"prompt_tokens": 12, "completion_tokens": 4},
+                    "timings": {
+                        "cache_n": 8,
+                        "prompt_n": 4,
+                        "prompt_ms": 1.5,
+                        "predicted_n": 4,
+                        "predicted_ms": 2.5,
+                    },
                 },
             )
             return
@@ -166,6 +173,9 @@ def test_llamacpp_backend_routes_streams_and_clears_loras_on_error(tmp_path: Pat
         assert res.text == '{"code":"FIN-CAP"}'
         assert res.routing.selected_units == ("ops-gguf-v1",)
         assert len(res.token_logprobs) == 2
+        assert res.server_timings is not None
+        assert res.server_timings["cache_n"] == 8
+        assert res.server_timings["prompt_n"] == 4
         assert llama.active_lora_ids == set()
 
         # 2. General prompt falls back to base without activating LoRA 0.

@@ -46,6 +46,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import warnings
 import weakref
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
@@ -122,6 +123,21 @@ class _Spawner:
         return fut.result()
 
 
+def _parallel_slots(args: Sequence[str]) -> int | None:
+    """Value of `-np` / `--parallel` in a llama-server argument list (last one wins)."""
+    value: int | None = None
+    for i, arg in enumerate(args):
+        raw: str | None = None
+        if arg in ("-np", "--parallel") and i + 1 < len(args):
+            raw = args[i + 1]
+        elif arg.startswith(("--parallel=", "-np=")):
+            raw = arg.split("=", 1)[1]
+        if raw is not None:
+            with contextlib.suppress(ValueError):
+                value = int(raw)
+    return value
+
+
 class LlamaServerError(RuntimeError):
     """`llama-server` could not be started or did not become healthy."""
 
@@ -152,6 +168,15 @@ class LlamaServerSupervisor:
         self.n_gpu_layers = int(n_gpu_layers)
         self.ctx_size = int(ctx_size)
         self.extra_args = tuple(str(a) for a in extra_args)
+        if _parallel_slots(self.extra_args) == 1:
+            warnings.warn(
+                "llama-server with --parallel 1: the per-turn routing embedding request "
+                "reuses the only slot and evicts the cached chat prompt, so every routed "
+                "turn re-reads the whole conversation. Keep at least 2 slots (the default "
+                "is auto).",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         self.lora_dir = Path(lora_dir).expanduser().resolve()
         self.log_path = (
             Path(log_path).expanduser().resolve()

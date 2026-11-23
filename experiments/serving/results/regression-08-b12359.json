@@ -1,0 +1,328 @@
+{
+  "mode": "regression",
+  "build": "version: 1.0.0-dev (build 12359, commit b1b770d90d)",
+  "args": {
+    "mode": "regression",
+    "gguf": "Qwen3.5-0.8B-Q4_K_M.gguf",
+    "ctx": "4096",
+    "ngl": "99",
+    "np": "None",
+    "extra": "[]",
+    "port": "8197",
+    "sizes": "[4000, 16000, 30000]",
+    "reps": "2",
+    "chunk_chars": "6000",
+    "rank": "16",
+    "std": "0.01",
+    "compare": "regression-08-b12110.json",
+    "edge_prompt_tokens": "4000",
+    "workdir": "None"
+  },
+  "items": [
+    {
+      "unit": null,
+      "prompt": 0,
+      "text": "Here\u2019s a simple, efficient Python function that returns the n-th Fibonacci number:\n\n```python\ndef fibonacci(n: int) -> int:\n    \"\"\"",
+      "logprobs": [
+        -0.8345053195953369,
+        -0.19465509057044983,
+        -0.0269963126629591,
+        -0.710496187210083,
+        -0.8349105715751648,
+        -0.37230318784713745,
+        -1.4845901727676392,
+        -0.22200819849967957
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 1,
+      "text": "A mutex is a synchronization primitive that protects shared resources from concurrent access, ensuring that only one thread can execute a critical section at a time.",
+      "logprobs": [
+        -0.006907302420586348,
+        -0.03319890424609184,
+        -0.3703029453754425,
+        -0.08743806183338165,
+        -1.2619959115982056,
+        -0.5225731730461121,
+        -0.6048800945281982,
+        -1.1666874885559082
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 2,
+      "text": "Here are three prime numbers greater than 100:\n\n1.  **101**\n2.  **103**\n3",
+      "logprobs": [
+        -0.10409269481897354,
+        -0.001956468215212226,
+        -0.0064094592817127705,
+        -0.002347002737224102,
+        -9.93062712950632e-05,
+        -0.007078188005834818,
+        -5.960466182841628e-07,
+        -0.00019629736198112369
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 3,
+      "text": "**French:**\n*   **Bonjour** (Formal)\n*   **Bonsoir** (Informal)\n\n**Spanish:**\n*  ",
+      "logprobs": [
+        -0.8499749898910522,
+        -0.6168347001075745,
+        -0.24800613522529602,
+        -0.6935866475105286,
+        -0.825715184211731,
+        -0.02629559487104416,
+        -0.7634046077728271,
+        -0.8631000518798828
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 4,
+      "text": "**HTTP status code 404** stands for **\"Not Found.\"**\n\nIt is the most common error in web development and web browsers. Here is",
+      "logprobs": [
+        -0.4465998113155365,
+        -0.027014194056391716,
+        -0.13047437369823456,
+        -0.4378476142883301,
+        -0.01894333027303219,
+        -0.00011110922787338495,
+        -0.00016285314632114023,
+        -0.0026186988689005375
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 5,
+      "text": "`wc -l *.py`",
+      "logprobs": [
+        -1.3440954685211182,
+        -0.6763433218002319,
+        -0.020858675241470337,
+        -0.0167797040194273,
+        -0.45484891533851624,
+        -0.0007215360528789461,
+        -0.11093577742576599,
+        -0.005257814656943083
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 6,
+      "text": "Tic-tac-toe is a game played on a 3x3 grid where players take turns placing X or O to form a line of three,",
+      "logprobs": [
+        -0.7295255064964294,
+        -0.004763426724821329,
+        -0.049725618213415146,
+        -0.0002364795800531283,
+        -0.002389780944213271,
+        -0.0001149243616964668,
+        -0.7485193610191345,
+        -0.17259661853313446
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 7,
+      "text": "The capital of Australia is **Canberra**.\n\nLocated in the outback of the state of Victoria, it is the second-largest city in Australia and the second",
+      "logprobs": [
+        -0.01970468834042549,
+        -0.007619006559252739,
+        -0.4106595814228058,
+        -0.005551520269364119,
+        -0.008830800652503967,
+        -0.007877840660512447,
+        -0.6466562151908875,
+        -0.0008101764251478016
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 8,
+      "text": "To convert 72 degrees Fahrenheit to Celsius, we use the standard formula:\n\n$$C = (F - 32) \\times \\frac{",
+      "logprobs": [
+        -0.0041648331098258495,
+        -7.677372923353687e-05,
+        -0.27528485655784607,
+        -1.23978434203309e-05,
+        -2.145769485650817e-06,
+        -0.005571778863668442,
+        -0.001226640772074461,
+        -0.12831683456897736
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 9,
+      "text": "A sorting algorithm with an **O(n log n)** worst-case time complexity is **Merge Sort**.\n\n### Why it fits the criteria:\nMerge Sort is",
+      "logprobs": [
+        -1.19166898727417,
+        -1.3719356060028076,
+        -2.6464813345228322e-05,
+        -0.3029557466506958,
+        -0.5667054057121277,
+        -0.11541616916656494,
+        -0.023864852264523506,
+        -0.000808744749519974
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 0,
+      "text": "Here\u2019s a simple, efficient Python function that returns the n-th Fibonacci number:\n\n```python\ndef fibonacci(n: int) -> int:\n    \"\"\"",
+      "logprobs": [
+        -0.7579635977745056,
+        -0.1764640212059021,
+        -0.025316011160612106,
+        -0.6911407709121704,
+        -0.8369412422180176,
+        -0.34974774718284607,
+        -1.4406944513320923,
+        -0.24766163527965546
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 1,
+      "text": "A mutex is a synchronization primitive that protects shared resources from concurrent access, ensuring that only one thread can execute a critical section at a time.",
+      "logprobs": [
+        -0.006935811601579189,
+        -0.03365786746144295,
+        -0.3905392289161682,
+        -0.07821428775787354,
+        -1.3354371786117554,
+        -0.514438271522522,
+        -0.6313084363937378,
+        -1.1530938148498535
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 2,
+      "text": "Here are three prime numbers greater than 100:\n\n1.  **101**\n2.  **103**\n3",
+      "logprobs": [
+        -0.09199869632720947,
+        -0.0018679052591323853,
+        -0.00753444479778409,
+        -0.0024290354922413826,
+        -0.0001064595635398291,
+        -0.007424609735608101,
+        -3.576279254957626e-07,
+        -0.00020106667943764478
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 3,
+      "text": "**French:**\n*   **Bonjour** (Formal)\n*   **Bonsoir** (Informal)\n\n**Spanish:**\n*  ",
+      "logprobs": [
+        -0.8283584713935852,
+        -0.6490191221237183,
+        -0.24278195202350616,
+        -0.6835241913795471,
+        -0.8910282850265503,
+        -0.023214027285575867,
+        -0.7397674918174744,
+        -0.8422958254814148
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 4,
+      "text": "**HTTP status code 404** stands for **\"Not Found.\"**\n\nIt is the most common error in web development and web search engines. Here",
+      "logprobs": [
+        -0.42585188150405884,
+        -0.02731184847652912,
+        -0.1364404410123825,
+        -0.43293920159339905,
+        -0.01649577170610428,
+        -0.00010955933976219967,
+        -0.00016285314632114023,
+        -0.00240645045414567
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 5,
+      "text": "`wc -l *.py`",
+      "logprobs": [
+        -1.2453771829605103,
+        -0.6443291306495667,
+        -0.01931983418762684,
+        -0.016437964513897896,
+        -0.4555286467075348,
+        -0.000788045406807214,
+        -0.11256355047225952,
+        -0.005644126329571009
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 6,
+      "text": "Tic-tac-toe is a game played on a 3x3 grid where players take turns placing X or O to form a line of three,",
+      "logprobs": [
+        -0.7205730676651001,
+        -0.006307364907115698,
+        -0.05027778446674347,
+        -0.00022837147116661072,
+        -0.002098137279972434,
+        -9.2391470388975e-05,
+        -0.7321698665618896,
+        -0.18116997182369232
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 7,
+      "text": "The capital of Australia is **Canberra**.\n\nLocated in the outback of the state of Victoria, it is the second-largest city in Australia and the second",
+      "logprobs": [
+        -0.01859714649617672,
+        -0.008173097856342793,
+        -0.40072035789489746,
+        -0.00596978422254324,
+        -0.009223608300089836,
+        -0.006903821602463722,
+        -0.5943081974983215,
+        -0.0009414215455763042
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 8,
+      "text": "To convert 72 degrees Fahrenheit to Celsius, we use the standard formula:\n\n$$C = (F - 32) \\times \\frac{",
+      "logprobs": [
+        -0.003923473414033651,
+        -8.523827273165807e-05,
+        -0.2635490894317627,
+        -1.3351529560168274e-05,
+        -2.3841887468734058e-06,
+        -0.005691541824489832,
+        -0.0015154036227613688,
+        -0.12194575369358063
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 9,
+      "text": "A sorting algorithm with an **O(n log n)** worst-case time complexity is **Merge Sort**.\n\n### Why it fits the criteria:\nMerge Sort is",
+      "logprobs": [
+        -1.1223506927490234,
+        -1.4180535078048706,
+        -2.5987963454099372e-05,
+        -0.2888834774494171,
+        -0.5657646656036377,
+        -0.11600027978420258,
+        -0.02562514692544937,
+        -0.0007382375188171864
+      ]
+    }
+  ],
+  "compare": {
+    "identical_text": "20/20",
+    "median_abs_logprob_diff": 0.0,
+    "max_abs_logprob_diff": 0.0
+  }
+}

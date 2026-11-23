@@ -247,10 +247,75 @@ class RoutingDecision:
     selected_units: tuple[str, ...]
     scores: dict[str, float]
     thresholds: dict[str, float]
+    # True when a StickyRoutingPolicy kept the conversation's previous units instead of
+    # this prompt's own top-k (the scores are still this prompt's).
+    sticky: bool = False
 
     @property
     def fell_back_to_base(self) -> bool:
         return len(self.selected_units) == 0
+
+
+@dataclass(frozen=True)
+class StickyRoutingPolicy:
+    """Hysteresis over per-turn routing decisions within one conversation.
+
+    On llama-server any change of the active LoRA set (unit A to B, unit to base, base
+    to unit) discards the slot's prompt cache, so the whole conversation is read again.
+    That costs about 10 s at 16k tokens on a 4B model. This policy keeps the previous
+    turn's units unless:
+
+      * the conversation is still shorter than `min_context_tokens` (re-reading is cheap,
+        so the fresh decision wins);
+      * a previous unit no longer clears its own threshold, or is no longer routable;
+      * the fresh decision's best margin above threshold beats the previous units' weakest
+        margin by more than `switch_margin` (base counts as margin 0).
+    """
+
+    switch_margin: float = 0.05
+    min_context_tokens: int = 2048
+
+    def __post_init__(self) -> None:
+        if self.switch_margin < 0:
+            raise ValueError("switch_margin must be >= 0")
+        if self.min_context_tokens < 0:
+            raise ValueError("min_context_tokens must be >= 0")
+
+    @staticmethod
+    def _margins(decision: RoutingDecision, units: tuple[str, ...]) -> list[float] | None:
+        out: list[float] = []
+        for uid in units:
+            if uid not in decision.scores or uid not in decision.thresholds:
+                return None
+            out.append(decision.scores[uid] - decision.thresholds[uid])
+        return out
+
+    def apply(
+        self,
+        previous: tuple[str, ...] | None,
+        fresh: RoutingDecision,
+        *,
+        context_tokens: int,
+    ) -> RoutingDecision:
+        """Return `fresh`, or `fresh` with `previous` units kept (marked `sticky`)."""
+        if previous is None or previous == fresh.selected_units:
+            return fresh
+        if context_tokens < self.min_context_tokens:
+            return fresh
+        prev_margins = self._margins(fresh, previous)
+        if prev_margins is None or any(m < 0 for m in prev_margins):
+            return fresh
+        fresh_margins = self._margins(fresh, fresh.selected_units) or []
+        prev_floor = min(prev_margins, default=0.0)
+        fresh_best = max(fresh_margins, default=0.0)
+        if fresh_best - prev_floor > self.switch_margin:
+            return fresh
+        return RoutingDecision(
+            selected_units=previous,
+            scores=fresh.scores,
+            thresholds=fresh.thresholds,
+            sticky=True,
+        )
 
 
 class MoESkillRouter:

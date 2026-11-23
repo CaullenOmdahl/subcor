@@ -6,7 +6,9 @@ Skill Units itself on a PyTorch trainer loaded from the same GGUF file. Every tr
 unit is exported as a GGUF LoRA adapter and loaded into `llama-server`.
 
 The reference machine is an AMD Radeon RX 6800 (16 GB, RDNA2, `gfx1030`) on
-CachyOS. It uses `llama.cpp` b12110 with the Vulkan backend, plus `torch 2.14.1+rocm7.2`
+CachyOS. It uses `llama.cpp` 1.0.0 (b12359) with the Vulkan backend. Greedy text and
+logprobs for base and unit are bit-identical to b12110 on 0.8B and 4B
+(`experiments/serving/results/regression-*`). It also uses `torch 2.14.1+rocm7.2`
 and `transformers 5.23`. The same code paths work with CUDA, HIP and CPU builds of
 `llama.cpp`, and with CUDA or CPU PyTorch.
 
@@ -175,6 +177,51 @@ The server does it outside the kernel lock, so chat keeps flowing while a unit i
 `llama.cpp` decodes about 10× faster than eager PyTorch on this card. That is why
 PyTorch only trains here and never serves.
 
+### Prompt cache and Skill Unit switches (b12359, 4B, `-c 32768`)
+
+`llama-server` keeps each slot's processed prompt, so a turn that only appends to the
+conversation reads just the new tokens. It **clears** that cache whenever the request's
+LoRA set differs from the one that built it. SUBCOR routes on every turn and sends
+every adapter id with scale 1 or 0. So a turn on a different unit, unit→base or
+base→unit, re-reads the whole conversation.
+
+Measured with `experiments/serving/cache_switch.py`, using synthetic units and
+one-turn probes on a warm cache. Times are prompt processing:
+
+| Conversation | Same unit (or base) | Any unit change |
+|---|---|---|
+| 4k tokens | 0.10 s (19 new tokens) | 2.2 s (full re-read) |
+| 16k tokens | 0.11 s | 10.5 s |
+| 30k tokens | 0.12 s | 25.2 s |
+
+Prompt processing slows as the context grows: about 1,900 tok/s at 4k and 1,200 tok/s
+at 30k.
+
+With `--parallel 1` there is a second effect. The routing embedding request takes the
+only slot, so even same-unit turns are re-read in full every time. That's 25 s per turn
+at 30k. With the default slot count (auto, 4 here) the embedding lands in another slot,
+and same-unit turns stay cached. The supervisor warns if it is given `--parallel 1`.
+
+**Sticky routing (`subcor serve --sticky-routing`, off by default)** cuts the number of
+switches. The kernel remembers which units each conversation's previous turn ran with,
+keyed on the tenant's router, the seat, and the opening system and user messages. Chat
+requests carry no conversation id. It keeps those units unless one of these holds:
+
+- the conversation is shorter than `--sticky-min-tokens` (default 2048, estimated at
+  4 characters per token), where a re-read is cheap;
+- a previous unit no longer clears its own threshold or is no longer routable;
+- the fresh decision's best margin above threshold beats the previous units' weakest
+  margin by more than `--sticky-switch-margin` (default 0.05). The base counts as margin 0.
+
+A kept decision is marked `sticky` in the `RoutingDecision`, and its scores are still
+the current prompt's. The trade-off is routing freshness. A turn that should move to a
+slightly better unit stays on the old one, and two conversations with an identical
+opening share history. How often real units switch, and how much routing quality the
+default margin costs, is unmeasured until trained gates exist.
+
+See [ALORA-NOTE.md](ALORA-NOTE.md) for the mechanism and the options for avoiding
+switch re-reads.
+
 ## 6. Why train on a dequantized copy of the served GGUF
 
 Skill Units are low-rank deltas `ΔW = B·A` added to frozen base projections. The
@@ -226,6 +273,41 @@ Options when memory is tight:
 - Smaller `--ctx-size`, or partial offload with `--n-gpu-layers`.
 - Fewer `--trainer-layers`.
 
+### Serving on 4–6 GB cards
+
+Skill Units always run on the device that holds their base layer. llama.cpp allocates
+each LoRA tensor in the base weight's buffer (`src/llama-adapter.cpp`), and no flag
+splits them. They are only a few MB, so the base model and KV cache are what decide
+whether it fits.
+
+Measured on the RX 6800 (b12359, `-c 8192`, one synthetic unit active, VRAM over
+idle, prompt of about 3.1k tokens read cold):
+
+| Config | VRAM loaded / peak | Prompt | Decode |
+|---|---|---|---|
+| 0.8B, all layers | 0.7 / 1.2 GiB | 8,950 tok/s | 211 tok/s |
+| 4B, all layers | 3.1 / 3.6 GiB | 1,970 tok/s | 100 tok/s |
+| 4B, `-ngl 24` of 32 | 2.4 / 2.8 GiB | 1,500 tok/s | 26 tok/s |
+| 4B, `-ngl 16` | 1.8 / 2.2 GiB | 1,190 tok/s | 19 tok/s |
+| 4B, all layers, `--no-kv-offload` | 2.6 / 3.1 GiB | 1,660 tok/s | 20 tok/s |
+| 9B, all layers | 5.3 / 5.8 GiB | 1,110 tok/s | 67 tok/s |
+| 9B, `-ngl 20` of 32 | 3.5 / 4.0 GiB | 490 tok/s | 14 tok/s |
+| 9B, `-ngl 12` | 2.4 / 2.9 GiB | 470 tok/s | 11 tok/s |
+
+Partial offload costs far more than it saves. Moving 8 of 32 layers to the CPU cuts
+4B decode from 100 to 26 tok/s. Keeping the KV cache on the CPU drops it to 20 tok/s
+and saves only 0.45 GiB at 8k context.
+
+On a small card, pick the largest base that fits **entirely**:
+- 4 GB card: 4B, which fits with little headroom for the desktop.
+- 6 GB card: 4B comfortably, or 9B only with nothing else using the GPU.
+
+The KV cache is small for these hybrid models, because only every 4th layer uses full
+attention. For the 4B it is about 32 KiB per token in f16, so 32k context adds about
+1 GiB. That is an estimate from the GGUF metadata; it wasn't measured here.
+
+Results are in `experiments/serving/results/edge-b12359.json`.
+
 ## 8. Limitations
 
 - **Restart to add adapters.** `llama-server` loads LoRA adapters only at startup.
@@ -238,6 +320,13 @@ Options when memory is tight:
 - **Global scales and embeddings.** Embedding endpoints ignore the per-request `lora`
   field and use the global scales. SUBCOR keeps those scales at 0. Do not change them
   from outside.
+- **Unit switches re-read the conversation.** See "Prompt cache and Skill Unit
+  switches" in §5. At 30k tokens on a 4B, one switch costs about 25 s.
+  `--sticky-routing` reduces how often this happens but does not change its cost.
+- **Routing reads only the end of a long message.** `llama-server` embeds an input in
+  one physical batch (`-ub`, default 512 tokens). A longer last user message is clipped
+  to its final tokens before routing, so routing only sees the end of a long paste.
+  Before this fix, such messages failed the whole chat request with HTTP 500.
 - **One trainer at a time.** Training runs under the kernel lock, so chat waits during
   the training phase. This matches the MLX backend.
 - **Quantized-base training** (needed for bases larger than about 5B on 16 GB) is
