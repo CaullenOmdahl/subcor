@@ -21,6 +21,13 @@ from typing import Any
 import numpy as np
 
 
+def _normalize_seat(seat: str | None) -> str | None:
+    """Canonical seat name: stripped and lowercased; blank means no seat."""
+    if seat is None or not seat.strip():
+        return None
+    return seat.strip().lower()
+
+
 def _l2_normalize(vec: np.ndarray, *, eps: float = 1e-12) -> np.ndarray:
     arr = np.asarray(vec, dtype=np.float64)
     if arr.ndim == 1:
@@ -116,10 +123,20 @@ class RouterGate:
         return pos_sim - float(np.dot(e, self.neg_centroid))
 
     def matches_seat(self, seat: str | None) -> bool:
-        """Return True if this gate is eligible for the requested organizational seat."""
-        if self.seat_scope is None or seat is None:
+        """Return True if this gate is eligible for the requested organizational seat.
+
+        Seat scope is a routing hint, not an access-control boundary. A scoped gate is
+        eligible for its own seat (compared case-insensitively, ignoring surrounding
+        whitespace) and filtered for any other seat. A missing or blank `seat` means "no
+        seat context": every gate is eligible. Authorization is enforced separately by
+        tenant and principal checks; do not rely on seat scope to keep a unit away from
+        a caller. The HTTP chat endpoint always supplies a seat (`X-CaPheOS-Seat`,
+        default `intern`), so over HTTP a scoped gate only runs for its own seat.
+        """
+        norm_seat = _normalize_seat(seat)
+        if self.seat_scope is None or norm_seat is None:
             return True
-        return self.seat_scope.strip().lower() == seat.strip().lower()
+        return _normalize_seat(self.seat_scope) == norm_seat
 
     def matches(self, embedding: np.ndarray) -> bool:
         return self.score(embedding) >= self.threshold
@@ -175,7 +192,7 @@ class RouterGate:
         else:
             threshold = max(midpoint, float(np.mean(neg_scores)) + 1e-4)
 
-        norm_scope = seat_scope.strip().lower() if seat_scope and seat_scope.strip() else None
+        norm_scope = _normalize_seat(seat_scope)
         return cls(
             unit_id=unit_id,
             tap_layer=tap_layer,
@@ -218,7 +235,7 @@ class RouterGate:
             threshold=float(data["threshold"]),
             pos_mean_score=float(data["pos_mean_score"]),
             neg_mean_score=float(data["neg_mean_score"]),
-            seat_scope=None if raw_scope is None else str(raw_scope),
+            seat_scope=_normalize_seat(None if raw_scope is None else str(raw_scope)),
             prototypes=protos,
         )
 
@@ -239,7 +256,8 @@ class RoutingDecision:
 class MoESkillRouter:
     """Hierarchical seat-scoped + multi-prototype top-k Skill Unit router.
 
-    Filters candidate gates by optional `seat` scope first (when provided), then
+    Filters candidate gates by optional `seat` scope first (when provided; see
+    `RouterGate.matches_seat` for the omitted/blank-seat contract), then
     selects up to `top_k` Skill Units whose contrastive score clears their
     calibrated threshold (ranked by margin above threshold). If no unit clears
     its threshold, selects 0 units so inference runs on the pure frozen base kernel.

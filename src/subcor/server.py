@@ -1304,7 +1304,9 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
             try:
                 model_field = body.get("model")
                 header_tenant = self.headers.get("X-SUBCOR-Tenant")
-                seat = self.headers.get("X-CaPheOS-Seat", "intern")
+                # Missing or blank seat header -> the default seat, so a scoped gate never
+                # widens to "all seats" over HTTP (see RouterGate.matches_seat).
+                seat = (self.headers.get("X-CaPheOS-Seat") or "").strip() or "intern"
                 tenant, use_base_only = mgr.resolve_tenant_from_model(
                     None if model_field is None else str(model_field),
                     header_tenant,
