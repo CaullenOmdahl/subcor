@@ -130,8 +130,8 @@ class RouterGate:
         whitespace) and filtered for any other seat. A missing or blank `seat` means "no
         seat context": every gate is eligible. Authorization is enforced separately by
         tenant and principal checks; do not rely on seat scope to keep a unit away from
-        a caller. The HTTP chat endpoint always supplies a seat (`X-CaPheOS-Seat`,
-        default `intern`), so over HTTP a scoped gate only runs for its own seat.
+        a caller. The HTTP chat endpoint passes a seat (`X-CaPheOS-Seat`, default `intern`) to
+        every backend that accepts one, as all built-in backends do.
         """
         norm_seat = _normalize_seat(seat)
         if self.seat_scope is None or norm_seat is None:

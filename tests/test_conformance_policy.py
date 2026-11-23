@@ -227,3 +227,45 @@ def test_http_study_rejects_looser_thresholds(tmp_path: Path) -> None:
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_policy_requires_anchor_cases() -> None:
+    with pytest.raises(ValueError, match="anchor_cases"):
+        ConformancePolicy(anchor_cases=())
+
+
+def test_anchor_prompts_are_never_used_as_router_negatives(tmp_path: Path) -> None:
+    """Listing the anchors as negatives would keep the gate off them and pass by construction."""
+    mgr = _manager(tmp_path)
+    anchors = [p for p, _ in DEFAULT_BASELINE_ANCHOR_CASES]
+    res = _study(mgr, negative_prompts=[*anchors, "Write a haiku about rain."])
+    assert res["baseline_neg_overlap"] == 0
+    spec = mgr.get_tenant("t").registry.load_skill_spec("ops-v1")
+    assert spec is not None
+    assert list(spec.negative_prompts) == ["Write a haiku about rain."]
+
+
+def test_http_async_study_rejects_looser_thresholds_before_queueing(tmp_path: Path) -> None:
+    manager = TenantManager(
+        state_dir=tmp_path / "state", kernel=_FakeMultiSkillKernel(), initial_tenants=("a",)
+    )
+    server = SubcorHTTPServer(("127.0.0.1", 0), manager=manager, api_key="secret-key")
+    host, port = server.server_address
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        code, body, _ = _http_json(
+            f"http://{host}:{port}/v1/subcor/tenants/a/study",
+            method="POST",
+            body={
+                "unit_id": "ops-v1",
+                "task_family": "ops",
+                "async": True,
+                "min_target_improvement": "nan",
+            },
+        )
+        assert code == 400
+        assert not manager._study_jobs
+    finally:
+        server.shutdown()
+        server.server_close()

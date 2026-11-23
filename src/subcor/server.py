@@ -107,6 +107,8 @@ class ConformancePolicy:
     anchor_cases: tuple[tuple[str, str], ...] = DEFAULT_BASELINE_ANCHOR_CASES
 
     def __post_init__(self) -> None:
+        if not self.anchor_cases:
+            raise ValueError("anchor_cases must not be empty: they are the regression check")
         _check_threshold("max_regression_tolerance", self.max_regression_tolerance, 0.0, 1.0)
         _check_threshold("min_target_improvement", self.min_target_improvement, 0.0, 1.0)
 
@@ -882,12 +884,16 @@ class TenantManager:
         )
         # Owner anchors are scored separately when the proposer brought its own baseline.
         extra_anchor_eval = anchor_eval if base_eval != anchor_eval else []
-        neg_prompts = (
-            list(negative_prompts)
-            if negative_prompts
-            else list(DEFAULT_NEGATIVE_CALIBRATION_PROMPTS)
-        )
-        base_prompt_set = {p.strip().lower() for p, _ in base_eval}
+        # The router gate is calibrated not to fire on negative prompts. A proposer who lists
+        # the owner anchors as negatives would make the anchor check pass by construction,
+        # so anchor prompts are never used as negatives.
+        anchor_prompt_set = {p.strip().lower() for p, _ in anchor_eval}
+        neg_prompts = [
+            p
+            for p in (negative_prompts or DEFAULT_NEGATIVE_CALIBRATION_PROMPTS)
+            if p.strip().lower() not in anchor_prompt_set
+        ] or list(DEFAULT_NEGATIVE_CALIBRATION_PROMPTS)
+        base_prompt_set = {p.strip().lower() for p, _ in base_eval} | anchor_prompt_set
         neg_prompt_set = {p.strip().lower() for p in neg_prompts}
         baseline_neg_overlap = len(base_prompt_set & neg_prompt_set)
 
@@ -1748,6 +1754,10 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
                     "num_prototypes": int(body.get("num_prototypes", 1)),
                     "seed": int(body.get("seed", 42)),
                 }
+                # Reject looser or invalid thresholds before any work is queued (HTTP 400).
+                mgr.conformance_policy.resolve(
+                    study_kwargs["max_regression_tolerance"], study_kwargs["min_target_improvement"]
+                )
                 if bool(body.get("async", False)):
                     job = mgr.submit_study_job(tid, **study_kwargs)
                     self._send_json(
