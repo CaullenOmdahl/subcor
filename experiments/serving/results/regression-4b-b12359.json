@@ -1,0 +1,328 @@
+{
+  "mode": "regression",
+  "build": "version: 1.0.0-dev (build 12359, commit b1b770d90d)",
+  "args": {
+    "mode": "regression",
+    "gguf": "Qwen3.5-4B-Q4_K_M.gguf",
+    "ctx": "4096",
+    "ngl": "99",
+    "np": "None",
+    "extra": "[]",
+    "port": "8197",
+    "sizes": "[4000, 16000, 30000]",
+    "reps": "2",
+    "chunk_chars": "6000",
+    "rank": "16",
+    "std": "0.01",
+    "compare": "regression-4b-b12110.json",
+    "edge_prompt_tokens": "4000",
+    "workdir": "None"
+  },
+  "items": [
+    {
+      "unit": null,
+      "prompt": 0,
+      "text": "```python\ndef fibonacci(n: int) -> int:\n    \"\"\"\n    Return the n-th Fibonacci number (0-indexed).\n    \n    Sequence",
+      "logprobs": [
+        -0.6364511251449585,
+        -5.602852525044e-06,
+        -6.55653229841846e-06,
+        -0.004966531880199909,
+        -0.9205477833747864,
+        -0.0012813667999580503,
+        -0.030360743403434753,
+        -2.2769234419683926e-05
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 1,
+      "text": "A mutex, short for mutual exclusion, is a synchronization primitive that allows only one thread to access a shared resource at a time. It prevents data corruption and race",
+      "logprobs": [
+        -0.0002676010481081903,
+        -0.013002580963075161,
+        -0.673042356967926,
+        -0.4266382157802582,
+        -1.9073504518019035e-06,
+        -0.3060103952884674,
+        -0.002050175331532955,
+        -0.22211581468582153
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 2,
+      "text": "Here are three prime numbers greater than 100:\n\n1.  **101**\n    *   It is only divisible by 1",
+      "logprobs": [
+        -0.02736961469054222,
+        -5.92487704125233e-05,
+        -4.4108408474130556e-05,
+        -0.0003966283402405679,
+        -3.933914285880746e-06,
+        -0.0005920493276789784,
+        -1.1920928955078125e-07,
+        -1.1920935776288388e-06
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 3,
+      "text": "Here are the translations for \"good morning\":\n\n*   **French**: Bonjour\n*   **Spanish**: Buenos d\u00edas",
+      "logprobs": [
+        -1.4568910598754883,
+        -0.013834666460752487,
+        -0.0002416068164166063,
+        -0.010409584268927574,
+        -0.07959699630737305,
+        -0.007133115082979202,
+        -0.08508151024580002,
+        -4.410753263073275e-06
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 4,
+      "text": "**HTTP status code 404** stands for **\"Not Found.\"**\n\nIt is one of the most common responses returned by web servers when a client",
+      "logprobs": [
+        -0.05765745788812637,
+        -8.953018550528213e-05,
+        -0.36133095622062683,
+        -0.6526007056236267,
+        -0.0008240159950219095,
+        -2.5034263671841472e-05,
+        -9.536747711536009e-07,
+        -7.74863383412594e-06
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 5,
+      "text": "`find . -name \"*.py\" -type f -exec wc -l {} +`",
+      "logprobs": [
+        -0.11970983445644379,
+        -0.42414718866348267,
+        -0.00903328973799944,
+        -0.0010006068041548133,
+        -0.082728810608387,
+        -0.4368816316127777,
+        -2.2649790025752736e-06,
+        -1.2040211004205048e-05
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 6,
+      "text": "Tic-tac-toe is a two-player strategy game where players take turns marking spaces in a 3x3 grid with their respective symbols (X or",
+      "logprobs": [
+        -0.6386268138885498,
+        -3.087568256887607e-05,
+        -0.010726796463131905,
+        -0.00021609017858281732,
+        -0.00029395369347184896,
+        -4.0531240301788785e-06,
+        -0.0002822678361553699,
+        -0.03639037534594536
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 7,
+      "text": "Australia does not have a single official capital city. Instead, it has a **capital territory** called **Canberra**, which serves as the seat of the federal",
+      "logprobs": [
+        -0.6723814010620117,
+        -0.13350073993206024,
+        -0.005971703212708235,
+        -0.00955115631222725,
+        -0.03680640459060669,
+        -0.008050274103879929,
+        -0.4597483277320862,
+        -0.24262839555740356
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 8,
+      "text": "To convert a temperature from Fahrenheit ($F$) to Celsius ($C$), we use the following formula:\n\n$$C = (F - 32",
+      "logprobs": [
+        -0.0003817810211330652,
+        -8.940736734075472e-06,
+        -0.4509396553039551,
+        -1.811997572076507e-05,
+        -2.217317342001479e-05,
+        -0.17760680615901947,
+        -0.052315328270196915,
+        -0.5917691588401794
+      ]
+    },
+    {
+      "unit": null,
+      "prompt": 9,
+      "text": "**Merge Sort** is a classic example of a sorting algorithm that guarantees an **$O(n \\log n)$** time complexity in the worst case.\n\n",
+      "logprobs": [
+        -0.8834230303764343,
+        -0.2922842800617218,
+        -0.004702581092715263,
+        -0.0024627947714179754,
+        -0.13070176541805267,
+        -0.052787862718105316,
+        -0.16600081324577332,
+        -0.523033618927002
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 0,
+      "text": "```python\ndef fibonacci(n: int) -> int:\n    \"\"\"\n    Return the n-th Fibonacci number (0-indexed).\n\n    Sequence:",
+      "logprobs": [
+        -0.5571801066398621,
+        -5.841272468387615e-06,
+        -6.437322554120328e-06,
+        -0.004520664922893047,
+        -0.9191746711730957,
+        -0.0012068875366821885,
+        -0.03339190408587456,
+        -2.157711423933506e-05
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 1,
+      "text": "A mutex, short for mutual exclusion, is a synchronization primitive that allows only one thread to access a shared resource at a time. It prevents race conditions by blocking",
+      "logprobs": [
+        -0.0002665278734639287,
+        -0.013200481422245502,
+        -0.6626458168029785,
+        -0.4410759210586548,
+        -2.145769485650817e-06,
+        -0.3301829695701599,
+        -0.0019189638551324606,
+        -0.2200741469860077
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 2,
+      "text": "Here are three prime numbers greater than 100:\n\n1.  **101**\n    *   It is only divisible by 1",
+      "logprobs": [
+        -0.030176065862178802,
+        -5.555307143367827e-05,
+        -4.267783515388146e-05,
+        -0.0003559030592441559,
+        -3.933914285880746e-06,
+        -0.0005327093531377614,
+        -1.1920928955078125e-07,
+        -1.1920935776288388e-06
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 3,
+      "text": "Here are the translations for \"good morning\":\n\n*   **French**: Bonjour\n*   **Spanish**: Buenos d\u00edas",
+      "logprobs": [
+        -1.5358772277832031,
+        -0.015035868622362614,
+        -0.0002520998241379857,
+        -0.011010603047907352,
+        -0.07768873870372772,
+        -0.006578099448233843,
+        -0.09102894365787506,
+        -4.291543518775143e-06
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 4,
+      "text": "**HTTP status code 404** stands for **\"Not Found.\"**\n\nIt is one of the most common responses returned by web servers when a client",
+      "logprobs": [
+        -0.04880918562412262,
+        -9.32260081754066e-05,
+        -0.38405880331993103,
+        -0.6519721150398254,
+        -0.0007381182513199747,
+        -2.2411597456084564e-05,
+        -9.536747711536009e-07,
+        -8.344684829353355e-06
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 5,
+      "text": "`find . -name \"*.py\" -type f -exec wc -l {} +`",
+      "logprobs": [
+        -0.1180374026298523,
+        -0.4682518243789673,
+        -0.008306575007736683,
+        -0.0010359883308410645,
+        -0.08984876424074173,
+        -0.4061780869960785,
+        -1.7881409348774469e-06,
+        -1.0490472959645558e-05
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 6,
+      "text": "Tic-tac-toe is a two-player strategy game where players take turns marking spaces in a 3x3 grid with their respective symbols (X or",
+      "logprobs": [
+        -0.6636874675750732,
+        -2.8968277547392063e-05,
+        -0.009158520959317684,
+        -0.00020011281594634056,
+        -0.0002913303324021399,
+        -4.768382950715022e-06,
+        -0.00031476205913349986,
+        -0.03773355856537819
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 7,
+      "text": "Australia does not have a single official capital city. Instead, it has three capitals:\n\n*   **Canberra**: This is the capital of the **Australian",
+      "logprobs": [
+        -0.6743623614311218,
+        -0.1363474726676941,
+        -0.0060516949743032455,
+        -0.00919371098279953,
+        -0.03492683172225952,
+        -0.00811210460960865,
+        -0.47429636120796204,
+        -0.23803220689296722
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 8,
+      "text": "To convert a temperature from Fahrenheit ($F$) to Celsius ($C$), we use the following formula:\n\n$$C = (F - 32",
+      "logprobs": [
+        -0.00035363726783543825,
+        -9.298368240706623e-06,
+        -0.483985960483551,
+        -1.8596821973915212e-05,
+        -2.2650021492154337e-05,
+        -0.16565066576004028,
+        -0.057826124131679535,
+        -0.5332373380661011
+      ]
+    },
+    {
+      "unit": "unit-a",
+      "prompt": 9,
+      "text": "**Merge Sort** is a classic example of a sorting algorithm that guarantees **$O(n \\log n)$** time complexity in the worst case.\n\nUnlike",
+      "logprobs": [
+        -0.8851612210273743,
+        -0.2848653197288513,
+        -0.0038730904925614595,
+        -0.0024290354922413826,
+        -0.12999971210956573,
+        -0.048897624015808105,
+        -0.1828455775976181,
+        -0.5457794666290283
+      ]
+    }
+  ],
+  "compare": {
+    "identical_text": "20/20",
+    "median_abs_logprob_diff": 0.0,
+    "max_abs_logprob_diff": 0.0
+  }
+}

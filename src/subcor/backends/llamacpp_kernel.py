@@ -13,7 +13,7 @@ running on NVIDIA CUDA, AMD ROCm/HIP, Vulkan, Metal, or CPU:
   - LoRA selection for routed Skill Units, in one of two modes:
       * `request`: the per-request `"lora": [{"id": N, "scale": S}]` field of the chat
         request. Nothing global changes, so concurrent requests cannot leak adapters.
-        Verified against llama.cpp b12110.
+        Verified against llama.cpp b12110 and 1.0.0 (b12359).
       * `global`: `POST /lora-adapters` before the request and a strict `try/finally`
         reset to scale 0.0 afterwards, for older servers.
   - Optional `LlamaServerSupervisor` (SUBCOR owns `llama-server`) plus a PyTorch
@@ -27,6 +27,7 @@ Python dependencies (stdlib HTTP + NumPy).
 from __future__ import annotations
 
 import gc
+import hashlib
 import json
 import re
 import threading
@@ -34,6 +35,7 @@ import traceback
 import urllib.error
 import urllib.request
 import warnings
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,7 +46,7 @@ import numpy as np
 from subcor.confidence import parse_tool_calls
 from subcor.expansion import LowRankAdapter
 from subcor.intern import ngram_repetition_ratio
-from subcor.router import MoESkillRouter, RoutingDecision
+from subcor.router import MoESkillRouter, RoutingDecision, StickyRoutingPolicy
 from subcor.server import InferenceResult
 from subcor.types import DeltaEncoding, UnitState
 from subcor.units import LayerDeltaPayload, SkillUnitRegistry, build_layer_delta
@@ -53,6 +55,10 @@ if TYPE_CHECKING:
     from subcor.backends.llamacpp_supervisor import LlamaServerSupervisor
 
 _LORA_MODES = ("auto", "request", "global")
+# Conversations remembered for sticky routing (least recently used are dropped).
+_STICKY_MAX_CONVERSATIONS = 4096
+# Rough characters per token for the sticky-routing context-length estimate.
+_CHARS_PER_TOKEN = 4
 _UNSAFE_KEY_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 _LAYER_IDX_RE = re.compile(r"layers\.(\d+)\.")
 # Unit states whose supervised adapter is kept across llama-server restarts. A DORMANT
@@ -109,6 +115,24 @@ def _is_pooling_none_error(exc: urllib.error.HTTPError) -> bool:
     except Exception:  # pragma: no cover - defensive
         return False
     return "pooling" in body
+
+
+# llama-server embeds a whole input in one physical batch and rejects anything longer
+# ("input (N tokens) is too large to process. increase the physical batch size (current
+# batch size: M)"). Clipped routing inputs leave this many tokens of headroom for BOS/EOS
+# and re-tokenization drift.
+_EMBED_TOKEN_MARGIN = 16
+_TOO_LARGE_RE = re.compile(r"too large to process.*current batch size:\s*(\d+)", re.DOTALL)
+
+
+def _input_too_large_limit(exc: urllib.error.HTTPError) -> int | None:
+    """Physical batch size from llama-server's 'input too large' error, else None."""
+    try:
+        body = exc.read().decode("utf-8", errors="replace")
+    except Exception:  # pragma: no cover - defensive
+        return None
+    m = _TOO_LARGE_RE.search(body)
+    return int(m.group(1)) if m else None
 
 
 def _read_gguf_block_count(base_gguf: Path) -> int | None:
@@ -179,6 +203,7 @@ class LlamaCppServingAdapter:
         trainer_projections: tuple[str, ...] | None = None,
         trainer_quantize_4bit: bool = False,
         unload_trainer_after_study: bool = False,
+        sticky_routing: StickyRoutingPolicy | None = None,
     ) -> None:
         if lora_mode not in _LORA_MODES:
             raise ValueError(f"lora_mode must be one of {_LORA_MODES}, got {lora_mode!r}")
@@ -216,6 +241,11 @@ class LlamaCppServingAdapter:
         self._closed = False
         self._warned_unmapped: set[str] = set()
         self._embedding_path = "/v1/embeddings"
+
+        # Sticky routing: conversation key -> units the previous turn ran with.
+        self.sticky_routing = sticky_routing
+        self._sticky_units: OrderedDict[str, tuple[str, ...]] = OrderedDict()
+        self._sticky_lock = threading.Lock()
 
         self._trainer_factory = trainer_factory
         self.trainer_device = trainer_device
@@ -361,10 +391,30 @@ class LlamaCppServingAdapter:
         Embeddings always use llama-server's GLOBAL adapter scales (the per-request
         `lora` field is ignored by the embedding endpoints), so global scales are kept at
         0: in `global` mode they are reset here; in `request` mode they are never set.
+
+        llama-server embeds an input in one physical batch (`-ub`, default 512 tokens). A
+        longer prompt is clipped to its last tokens that fit, so routing keeps working on
+        long user messages instead of failing the whole chat request.
         """
         self._ensure_server()
         if self.lora_mode == "global":
             self._clear_active_loras()
+        try:
+            return self._embed_text(user_prompt)
+        except urllib.error.HTTPError as exc:
+            limit = _input_too_large_limit(exc)
+            if limit is None:
+                raise
+        return self._embed_text(self._clip_to_last_tokens(user_prompt, limit))
+
+    def _clip_to_last_tokens(self, text: str, batch_limit: int) -> str:
+        keep = max(1, batch_limit - _EMBED_TOKEN_MARGIN)
+        tokens = self._post_json("/tokenize", {"content": text, "add_special": False})["tokens"]
+        if len(tokens) <= keep:
+            keep = max(1, len(tokens) - _EMBED_TOKEN_MARGIN)
+        return str(self._post_json("/detokenize", {"tokens": tokens[-keep:]})["content"])
+
+    def _embed_text(self, user_prompt: str) -> np.ndarray:
         if self._embedding_path == "/v1/embeddings":
             try:
                 resp = self._post_json(
@@ -403,9 +453,58 @@ class LlamaCppServingAdapter:
         )
         emb = self.encode_prompt_embedding(last_user)
         decision = router.route(emb, top_k=top_k, seat=seat)
+        if self.sticky_routing is not None:
+            decision = self._apply_sticky(messages, router, seat, decision)
         # Verify SHA-256 payload integrity on disk for every selected Skill Unit.
         for uid in decision.selected_units:
             registry.load_verified_deltas(uid)
+        return decision
+
+    @staticmethod
+    def _conversation_key(
+        messages: list[dict[str, Any]], router: MoESkillRouter, seat: str | None
+    ) -> str | None:
+        """Identify a conversation by its opening system and user messages.
+
+        Chat requests carry no conversation id, but every turn of one conversation resends
+        the same opening. Two conversations with an identical opening share a key; the
+        policy only biases which units run, so the cost of a collision is a less fresh
+        routing decision, not wrong output from another tenant (the router is part of the
+        key, and each tenant has its own router).
+        """
+        system = next((m.get("content") for m in messages if m.get("role") == "system"), None)
+        first_user = next((m.get("content") for m in messages if m.get("role") == "user"), None)
+        if first_user is None:
+            return None
+        raw = json.dumps([id(router), seat, system, first_user], sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _estimate_context_tokens(messages: list[dict[str, Any]]) -> int:
+        chars = sum(len(json.dumps(m.get("content", ""), default=str)) for m in messages)
+        return chars // _CHARS_PER_TOKEN
+
+    def _apply_sticky(
+        self,
+        messages: list[dict[str, Any]],
+        router: MoESkillRouter,
+        seat: str | None,
+        fresh: RoutingDecision,
+    ) -> RoutingDecision:
+        policy = self.sticky_routing
+        key = self._conversation_key(messages, router, seat)
+        if policy is None or key is None:
+            return fresh
+        with self._sticky_lock:
+            previous = self._sticky_units.get(key)
+        decision = policy.apply(
+            previous, fresh, context_tokens=self._estimate_context_tokens(messages)
+        )
+        with self._sticky_lock:
+            self._sticky_units[key] = decision.selected_units
+            self._sticky_units.move_to_end(key)
+            while len(self._sticky_units) > _STICKY_MAX_CONVERSATIONS:
+                self._sticky_units.popitem(last=False)
         return decision
 
     def generate_routed_messages(
@@ -462,6 +561,7 @@ class LlamaCppServingAdapter:
         prompt_tokens = int(usage.get("prompt_tokens", 0))
         completion_tokens = int(usage.get("completion_tokens", max(1, len(raw_content.split()))))
         hit_limit = choice.get("finish_reason") == "length"
+        timings = body.get("timings")
 
         return InferenceResult(
             text=clean_text,
@@ -472,6 +572,7 @@ class LlamaCppServingAdapter:
             routing=decision,
             tool_calls=tool_calls,
             token_logprobs=tuple(token_lps),
+            server_timings=dict(timings) if isinstance(timings, dict) else None,
         )
 
     def stream_routed_messages(

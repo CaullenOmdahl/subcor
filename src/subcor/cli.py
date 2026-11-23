@@ -9,9 +9,13 @@ import signal
 import tempfile
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from subcor.proving_ground import EvalMetrics, ProvingGroundReport, run_proving_ground
 from subcor.units import SkillUnitRegistry
+
+if TYPE_CHECKING:
+    from subcor.router import StickyRoutingPolicy
 
 _MLX_DEFAULT_MODEL = "mlx-community/Qwen3.5-0.8B-4bit"
 
@@ -256,6 +260,17 @@ def _run_mlx_moe_cli(args: argparse.Namespace) -> int:
     return 0
 
 
+def _sticky_policy(args: argparse.Namespace) -> StickyRoutingPolicy | None:
+    if not getattr(args, "sticky_routing", False):
+        return None
+    from subcor.router import StickyRoutingPolicy
+
+    return StickyRoutingPolicy(
+        switch_margin=args.sticky_switch_margin,
+        min_context_tokens=args.sticky_min_tokens,
+    )
+
+
 def _parse_lora_id_map(spec: str | None) -> dict[str, int]:
     """Parse `--lora-id-map`: a JSON object or comma-separated `unit_id=lora_id` pairs."""
     if not spec or not spec.strip():
@@ -381,6 +396,7 @@ def _run_serve(args: argparse.Namespace) -> int:
                 trainer_quantize_4bit=args.trainer_quantize_4bit,
                 unload_trainer_after_study=args.unload_trainer_after_study,
                 timeout=args.llamacpp_timeout,
+                sticky_routing=_sticky_policy(args),
             )
             if args.lora_id_map:
                 raise SystemExit("--lora-id-map applies only to an external server (no --gguf)")
@@ -401,6 +417,7 @@ def _run_serve(args: argparse.Namespace) -> int:
                 lora_mode=args.lora_mode,
                 lora_id_map=lora_id_map,
                 timeout=args.llamacpp_timeout,
+                sticky_routing=_sticky_policy(args),
             )
     else:
         projections = (
@@ -846,6 +863,27 @@ def main(argv: list[str] | None = None) -> int:
             "How routed LoRAs are selected: per-request 'lora' field, or global "
             "/lora-adapters. 'auto' = request when supervised, global for an external server."
         ),
+    )
+    serve_cmd.add_argument(
+        "--sticky-routing",
+        action="store_true",
+        help=(
+            "llama.cpp: keep a conversation's previous Skill Units unless the fresh routing "
+            "decision clearly beats them. Every unit switch makes llama-server re-read the "
+            "whole conversation, so this trades some routing freshness for prompt-cache hits."
+        ),
+    )
+    serve_cmd.add_argument(
+        "--sticky-switch-margin",
+        type=float,
+        default=0.05,
+        help="With --sticky-routing: margin above threshold a new unit needs to win a switch.",
+    )
+    serve_cmd.add_argument(
+        "--sticky-min-tokens",
+        type=int,
+        default=2048,
+        help="With --sticky-routing: estimated context size below which routing stays fresh.",
     )
     serve_cmd.add_argument(
         "--trainer-device",

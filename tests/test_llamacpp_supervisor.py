@@ -613,3 +613,28 @@ def test_no_orphan_when_owner_is_sigkilled(tmp_path: Path, base_gguf: Path, star
         for r in recs:
             if _pid_alive(r["pid"]):
                 os.kill(r["pid"], 9)
+
+
+@pytest.mark.parametrize(
+    ("extra", "warns"),
+    [
+        (["--parallel", "1"], True),
+        (["-np", "1"], True),
+        (["--parallel=1"], True),
+        (["-np", "4"], False),
+        (["-np", "1", "-np", "2"], False),
+        (["-fa", "on"], False),
+    ],
+)
+def test_single_slot_warns_that_routing_evicts_the_chat_cache(
+    tmp_path: Path, extra: list[str], warns: bool
+) -> None:
+    import warnings as _w
+
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        LlamaServerSupervisor(
+            base_gguf=tmp_path / "base.gguf", lora_dir=tmp_path / "loras", extra_args=extra
+        )
+    hits = [w for w in caught if "--parallel 1" in str(w.message)]
+    assert bool(hits) is warns

@@ -36,6 +36,8 @@ POOLING_NONE_ERROR = {
     }
 }
 
+BATCH_LIMIT = 512
+
 TOKENS_INVOICE = [[3.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 TOKENS_OTHER = [[0.0, 2.0, 0.0], [0.0, 0.0, 1.0]]
 
@@ -92,8 +94,26 @@ class _Handler(BaseHTTPRequestHandler):
 
         if self.path == "/lora-adapters":
             self._send(HTTPStatus.OK, {"success": True})
+        elif self.path == "/tokenize":
+            # Mock vocabulary: word "w<N>" is token N.
+            self._send(HTTPStatus.OK, {"tokens": [int(w[1:]) for w in text.split()]})
+        elif self.path == "/detokenize":
+            self._send(HTTPStatus.OK, {"content": " ".join(f"w{t}" for t in body["tokens"])})
         elif self.path == "/v1/embeddings":
-            if mode == "pooling_none":
+            if mode == "batch_limit" and len(text.split()) + 1 > BATCH_LIMIT:  # +1: BOS
+                self._send(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {
+                        "error": {
+                            "code": 500,
+                            "message": f"input ({len(text.split()) + 1} tokens) is too large "
+                            "to process. increase the physical batch size (current batch "
+                            f"size: {BATCH_LIMIT})",
+                            "type": "server_error",
+                        }
+                    },
+                )
+            elif mode == "pooling_none":
                 self._send(HTTPStatus.BAD_REQUEST, POOLING_NONE_ERROR)
             elif mode == "other_400":
                 self._send(
@@ -198,3 +218,25 @@ def test_unrelated_400_is_raised_and_does_not_switch_to_the_fallback(
         assert excinfo.value.code == 400
     paths = [p for p, _ in _embedding_calls(mock_server)]
     assert paths == ["/v1/embeddings", "/v1/embeddings"], paths
+
+
+@pytest.mark.parametrize("mock_server", ["batch_limit"], indirect=True)
+def test_prompt_longer_than_physical_batch_is_clipped_to_its_last_tokens(
+    mock_server: _MockServer,
+) -> None:
+    """llama-server rejects embedding inputs above `-ub` tokens; routing must clip and retry."""
+    adapter = _adapter(mock_server)
+    prompt = " ".join(f"w{i}" for i in range(1000))
+    emb = adapter.encode_prompt_embedding(prompt)
+    assert emb.shape == (3,)
+
+    bodies = [b for p, b in _embedding_calls(mock_server)]
+    assert len(bodies) == 2, bodies
+    retried = bodies[-1]["input"].split()
+    assert len(retried) + 1 <= BATCH_LIMIT
+    assert retried[-1] == "w999"  # the END of the message is what routing keeps
+
+    # A prompt that fits goes through in a single call.
+    mock_server.calls.clear()
+    adapter.encode_prompt_embedding("w1 w2 w3")
+    assert len(_embedding_calls(mock_server)) == 1

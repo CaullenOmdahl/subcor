@@ -225,3 +225,25 @@ def test_lora_id_map_is_rejected_with_gguf(tmp_path: Path, base_gguf: Path) -> N
     with pytest.raises(SystemExit, match="external server"):
         main(argv)
     assert _records(record) == []  # rejected before llama-server was started
+
+
+def test_sticky_routing_is_off_by_default_and_configurable(
+    tmp_path: Path, no_serve_forever: list[Any], kernels: list[Any]
+) -> None:
+    common = [
+        "serve",
+        "--backend",
+        "llamacpp",
+        "--llamacpp-url",
+        "http://127.0.0.1:9",
+        "--port",
+        str(_free_port()),
+        "--state-dir",
+        str(tmp_path / "state"),
+    ]
+    assert main(common) == 0
+    assert main([*common, "--sticky-routing", "--sticky-switch-margin", "0.1"]) == 0
+    assert kernels[0].sticky_routing is None
+    policy = kernels[1].sticky_routing
+    assert policy is not None
+    assert (policy.switch_margin, policy.min_context_tokens) == (0.1, 2048)
