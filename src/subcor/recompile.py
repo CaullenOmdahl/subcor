@@ -147,34 +147,13 @@ def recompile_units_for_kernel(
                 ],
             )
 
-        # A spec with invalid stored thresholds (e.g. NaN) is reported, not fatal to the batch.
+        # Stored thresholds are clamped to the owner policy (stricter only). A spec whose
+        # stored thresholds are invalid (e.g. NaN) is reported, not fatal to the batch;
+        # any other error from the study cycle still propagates.
         try:
-            res = dest_manager.run_study_cycle(
-                target_tenant,
-                unit_id=spec.unit_id,
-                version=spec.version,
-                task_family=spec.task_family,
-                title=spec.title,
-                summary=spec.summary,
-                proposer=spec.proposer,
-                system_prompt=spec.system_prompt,
-                training_trajectories=(
-                    list(spec.training_trajectories) if spec.training_trajectories else None
-                ),
-                eval_cases=list(spec.eval_cases) if spec.eval_cases else None,
-                baseline_cases=list(spec.baseline_cases) if spec.baseline_cases else None,
-                negative_prompts=list(spec.negative_prompts) if spec.negative_prompts else None,
-                rank=spec.rank,
-                sub1bit_rank=spec.sub1bit_rank,
-                steps=steps_override if steps_override is not None else spec.steps,
-                lr=spec.lr,
-                max_regression_tolerance=min(
-                    spec.max_regression_tolerance, policy.max_regression_tolerance
-                ),
-                min_target_improvement=max(
-                    spec.min_target_improvement, policy.min_target_improvement
-                ),
-                seed=seed + idx * 17,
+            tol, imp = policy.resolve(
+                min(spec.max_regression_tolerance, policy.max_regression_tolerance),
+                max(spec.min_target_improvement, policy.min_target_improvement),
             )
         except ValueError as exc:
             outcomes.append(
@@ -187,6 +166,29 @@ def recompile_units_for_kernel(
                 )
             )
             continue
+        res = dest_manager.run_study_cycle(
+            target_tenant,
+            unit_id=spec.unit_id,
+            version=spec.version,
+            task_family=spec.task_family,
+            title=spec.title,
+            summary=spec.summary,
+            proposer=spec.proposer,
+            system_prompt=spec.system_prompt,
+            training_trajectories=(
+                list(spec.training_trajectories) if spec.training_trajectories else None
+            ),
+            eval_cases=list(spec.eval_cases) if spec.eval_cases else None,
+            baseline_cases=list(spec.baseline_cases) if spec.baseline_cases else None,
+            negative_prompts=list(spec.negative_prompts) if spec.negative_prompts else None,
+            rank=spec.rank,
+            sub1bit_rank=spec.sub1bit_rank,
+            steps=steps_override if steps_override is not None else spec.steps,
+            lr=spec.lr,
+            max_regression_tolerance=tol,
+            min_target_improvement=imp,
+            seed=seed + idx * 17,
+        )
         new_manifest = SkillUnitManifest.from_dict(res["manifest"])
         passed = new_manifest.state is UnitState.CONFORMANT
         reason = (

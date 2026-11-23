@@ -11,6 +11,7 @@ import pytest
 
 from subcor.server import (
     DEFAULT_BASELINE_ANCHOR_CASES,
+    DEFAULT_NEGATIVE_CALIBRATION_PROMPTS,
     ConformancePolicy,
     SubcorHTTPServer,
     TenantManager,
@@ -242,7 +243,22 @@ def test_anchor_prompts_are_never_used_as_router_negatives(tmp_path: Path) -> No
     assert res["baseline_neg_overlap"] == 0
     spec = mgr.get_tenant("t").registry.load_skill_spec("ops-v1")
     assert spec is not None
-    assert list(spec.negative_prompts) == ["Write a haiku about rain."]
+    used = {p.strip().lower() for p in spec.negative_prompts}
+    assert not used & {p.strip().lower() for p in anchors}
+    # The owner's negatives are always used; the proposer's are added, never substituted.
+    assert set(DEFAULT_NEGATIVE_CALIBRATION_PROMPTS) <= set(spec.negative_prompts)
+    assert "Write a haiku about rain." in spec.negative_prompts
+
+
+def test_non_string_negative_prompts_are_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="negative_prompts"):
+        _study(_manager(tmp_path), negative_prompts=[1, 2])
+
+
+def test_policy_requires_usable_negatives() -> None:
+    anchor = DEFAULT_BASELINE_ANCHOR_CASES[0][0]
+    with pytest.raises(ValueError, match="negative_prompts"):
+        ConformancePolicy(negative_prompts=(anchor, "  "))
 
 
 def test_http_async_study_rejects_looser_thresholds_before_queueing(tmp_path: Path) -> None:

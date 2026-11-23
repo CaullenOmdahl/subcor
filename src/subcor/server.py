@@ -105,10 +105,15 @@ class ConformancePolicy:
     max_regression_tolerance: float = 0.02
     min_target_improvement: float = 0.25
     anchor_cases: tuple[tuple[str, str], ...] = DEFAULT_BASELINE_ANCHOR_CASES
+    # Always used to calibrate router gates, in addition to any proposer negatives.
+    negative_prompts: tuple[str, ...] = DEFAULT_NEGATIVE_CALIBRATION_PROMPTS
 
     def __post_init__(self) -> None:
         if not self.anchor_cases:
             raise ValueError("anchor_cases must not be empty: they are the regression check")
+        anchors = {p.strip().lower() for p, _ in self.anchor_cases}
+        if not [p for p in self.negative_prompts if p.strip() and p.strip().lower() not in anchors]:
+            raise ValueError("negative_prompts must include prompts that are not anchor prompts")
         _check_threshold("max_regression_tolerance", self.max_regression_tolerance, 0.0, 1.0)
         _check_threshold("min_target_improvement", self.min_target_improvement, 0.0, 1.0)
 
@@ -884,15 +889,21 @@ class TenantManager:
         )
         # Owner anchors are scored separately when the proposer brought its own baseline.
         extra_anchor_eval = anchor_eval if base_eval != anchor_eval else []
-        # The router gate is calibrated not to fire on negative prompts. A proposer who lists
-        # the owner anchors as negatives would make the anchor check pass by construction,
-        # so anchor prompts are never used as negatives.
+        # The router gate is calibrated not to fire on negative prompts. A proposer who listed
+        # only the owner anchors as negatives could tune the gate to stay off exactly those
+        # prompts and pass the anchor check by construction. So the owner's negatives are
+        # always included (a proposer can add negatives, never replace them), and anchor
+        # prompts themselves are never used as negatives.
+        if negative_prompts is not None and not all(isinstance(p, str) for p in negative_prompts):
+            raise ValueError("negative_prompts must be a list of strings")
         anchor_prompt_set = {p.strip().lower() for p, _ in anchor_eval}
-        neg_prompts = [
-            p
-            for p in (negative_prompts or DEFAULT_NEGATIVE_CALIBRATION_PROMPTS)
-            if p.strip().lower() not in anchor_prompt_set
-        ] or list(DEFAULT_NEGATIVE_CALIBRATION_PROMPTS)
+        neg_prompts = []
+        seen_neg: set[str] = set()
+        for p in (*policy.negative_prompts, *(negative_prompts or ())):
+            key = p.strip().lower()
+            if key and key not in anchor_prompt_set and key not in seen_neg:
+                seen_neg.add(key)
+                neg_prompts.append(p)
         base_prompt_set = {p.strip().lower() for p, _ in base_eval} | anchor_prompt_set
         neg_prompt_set = {p.strip().lower() for p in neg_prompts}
         baseline_neg_overlap = len(base_prompt_set & neg_prompt_set)
