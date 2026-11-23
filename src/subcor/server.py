@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import math
 import queue
 import re
 import threading
@@ -89,6 +90,60 @@ DEFAULT_NEGATIVE_CALIBRATION_PROMPTS: tuple[str, ...] = (
     "List three primary colors used in subtractive color mixing.",
     "How many minutes are in three and a half hours?",
 )
+
+
+@dataclass(frozen=True)
+class ConformancePolicy:
+    """Owner-controlled limits for the conformance gate of a Study Cycle.
+
+    Set by whoever constructs the `TenantManager` (the server owner), never by the
+    proposer. A study request may make the thresholds stricter, never looser, and its
+    unit is always scored on `anchor_cases` in addition to any proposer-supplied
+    baseline cases, so a proposer cannot swap in an easier regression suite.
+    """
+
+    max_regression_tolerance: float = 0.02
+    min_target_improvement: float = 0.25
+    anchor_cases: tuple[tuple[str, str], ...] = DEFAULT_BASELINE_ANCHOR_CASES
+
+    def __post_init__(self) -> None:
+        _check_threshold("max_regression_tolerance", self.max_regression_tolerance, 0.0, 1.0)
+        _check_threshold("min_target_improvement", self.min_target_improvement, 0.0, 1.0)
+
+    def resolve(
+        self, max_regression_tolerance: float | None, min_target_improvement: float | None
+    ) -> tuple[float, float]:
+        """Effective thresholds for one study: the request's if at least as strict."""
+        tol = self.max_regression_tolerance
+        if max_regression_tolerance is not None:
+            _check_threshold("max_regression_tolerance", max_regression_tolerance, 0.0, 1.0)
+            if max_regression_tolerance > tol:
+                raise ValueError(
+                    f"max_regression_tolerance {max_regression_tolerance} is looser than the "
+                    f"owner policy limit {tol}"
+                )
+            tol = float(max_regression_tolerance)
+        imp = self.min_target_improvement
+        if min_target_improvement is not None:
+            _check_threshold("min_target_improvement", min_target_improvement, 0.0, 1.0)
+            if min_target_improvement < imp:
+                raise ValueError(
+                    f"min_target_improvement {min_target_improvement} is looser than the "
+                    f"owner policy limit {imp}"
+                )
+            imp = float(min_target_improvement)
+        return tol, imp
+
+
+def _check_threshold(name: str, value: float, low: float, high: float) -> None:
+    if not isinstance(value, int | float) or not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number, got {value!r}")
+    if not low <= value <= high:
+        raise ValueError(f"{name} must be in [{low}, {high}], got {value!r}")
+
+
+def _optional_float(value: Any) -> float | None:
+    return None if value is None else float(value)
 
 
 def _layer_sort_key(layer_name: str) -> tuple[int, str]:
@@ -384,8 +439,10 @@ class TenantManager:
         kernel: ServingKernel,
         initial_tenants: tuple[str, ...] = (),
         allow_auto_create_tenants: bool | None = None,
+        conformance_policy: ConformancePolicy | None = None,
     ) -> None:
         self.state_dir = state_dir
+        self.conformance_policy = conformance_policy or ConformancePolicy()
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.kernel = kernel
         self.lock = threading.Lock()
@@ -749,13 +806,17 @@ class TenantManager:
         sub1bit_rank: int = 8,
         steps: int = 108,
         lr: float = 3e-4,
-        max_regression_tolerance: float = 0.02,
-        min_target_improvement: float = 0.25,
+        max_regression_tolerance: float | None = None,
+        min_target_improvement: float | None = None,
         seat_scope: str | None = None,
         num_prototypes: int = 1,
         seed: int = 42,
     ) -> dict[str, Any]:
         """Run a governed Study Cycle for one tenant using ONLY verified trajectories.
+
+        Conformance thresholds default to `self.conformance_policy`; a caller may only
+        tighten them. The policy's anchor cases are always scored, and the worse of the
+        anchor and proposer-baseline regressions is what the gate sees.
 
         Trains a zero-perturbation adapter, packs it into a Sub-1-Bit Skill Unit,
         fits a frozen-base RouterGate (optionally seat-scoped and multi-prototype),
@@ -766,6 +827,10 @@ class TenantManager:
         baseline evaluation, training, and conformance phases rather than starving.
         """
         ctx = self.get_tenant(tenant_id)
+        policy = self.conformance_policy
+        max_regression_tolerance, min_target_improvement = policy.resolve(
+            max_regression_tolerance, min_target_improvement
+        )
         trajectories_list: list[dict[str, Any]] = list(training_trajectories or [])
         try:
             pairs = ctx.telemetry.verified_distillation_pairs(task_family=task_family)
@@ -809,11 +874,14 @@ class TenantManager:
         if not pos_prompts:
             pos_prompts = [p for p, _ in target_eval] or ["Perform the requested skill."]
 
+        anchor_eval = list(policy.anchor_cases)
         base_eval = (
             [(c["prompt"], c["expected"]) for c in baseline_cases]
             if baseline_cases
-            else list(DEFAULT_BASELINE_ANCHOR_CASES)
+            else anchor_eval
         )
+        # Owner anchors are scored separately when the proposer brought its own baseline.
+        extra_anchor_eval = anchor_eval if base_eval != anchor_eval else []
         neg_prompts = (
             list(negative_prompts)
             if negative_prompts
@@ -849,6 +917,11 @@ class TenantManager:
             # Phase 1: Baseline evaluation & frozen-base prompt embeddings.
             with self.lock:
                 baseline_before = score_cases(base_eval, sys_prompt=None, use_router=True)
+                anchor_before = (
+                    score_cases(extra_anchor_eval, sys_prompt=None, use_router=True)
+                    if extra_anchor_eval
+                    else None
+                )
                 target_before = score_cases(target_eval, sys_prompt=system_prompt, use_router=True)
                 pos_embs = np.stack([self.kernel.encode_prompt_embedding(p) for p in pos_prompts])
                 neg_embs = np.stack([self.kernel.encode_prompt_embedding(p) for p in neg_prompts])
@@ -933,12 +1006,23 @@ class TenantManager:
                 ctx.router.register(gate)
                 try:
                     baseline_after = score_cases(base_eval, sys_prompt=None, use_router=True)
+                    anchor_after = (
+                        score_cases(extra_anchor_eval, sys_prompt=None, use_router=True)
+                        if extra_anchor_eval
+                        else None
+                    )
                     target_after = score_cases(
                         target_eval, sys_prompt=system_prompt, use_router=True
                     )
                 finally:
                     ctx.router.unregister(unit_id)
 
+            if (
+                anchor_before is not None
+                and anchor_after is not None
+                and anchor_before - anchor_after > baseline_before - baseline_after
+            ):
+                baseline_before, baseline_after = anchor_before, anchor_after
             manifest = ctx.registry.record_conformance(
                 unit_id,
                 baseline_before=baseline_before,
@@ -1656,8 +1740,10 @@ class SubcorRequestHandler(BaseHTTPRequestHandler):
                     "sub1bit_rank": int(body.get("sub1bit_rank", 8)),
                     "steps": int(body.get("steps", 108)),
                     "lr": float(body.get("lr", 3e-4)),
-                    "max_regression_tolerance": float(body.get("max_regression_tolerance", 0.02)),
-                    "min_target_improvement": float(body.get("min_target_improvement", 0.25)),
+                    "max_regression_tolerance": _optional_float(
+                        body.get("max_regression_tolerance")
+                    ),
+                    "min_target_improvement": _optional_float(body.get("min_target_improvement")),
                     "seat_scope": body.get("seat_scope"),
                     "num_prototypes": int(body.get("num_prototypes", 1)),
                     "seed": int(body.get("seed", 42)),

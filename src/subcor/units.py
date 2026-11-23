@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import struct
 import tempfile
@@ -405,7 +406,24 @@ class SkillUnitRegistry:
         min_target_improvement: float = 0.05,
         evaluator: str = "locked_conformance_gate",
     ) -> SkillUnitManifest:
-        """Evaluate locked conformance rules and transition DORMANT -> CONFORMANT on pass."""
+        """Evaluate locked conformance rules and transition DORMANT -> CONFORMANT on pass.
+
+        Scores must be finite accuracies in [0, 1], `max_regression_tolerance` in [0, 1] and
+        `min_target_improvement` in [-1, 1]. A NaN would make both comparisons false and
+        pass the gate, so non-finite values are rejected rather than evaluated.
+        """
+        for name, value, low in (
+            ("baseline_before", baseline_before, 0.0),
+            ("baseline_after", baseline_after, 0.0),
+            ("target_before", target_before, 0.0),
+            ("target_after", target_after, 0.0),
+            ("max_regression_tolerance", max_regression_tolerance, 0.0),
+            ("min_target_improvement", min_target_improvement, -1.0),
+        ):
+            if not isinstance(value, int | float) or not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite number, got {value!r}")
+            if not low <= value <= 1.0:
+                raise ValueError(f"{name} must be in [{low}, 1.0], got {value!r}")
         manifest = self.get_manifest(unit_id)
         if manifest.state not in (UnitState.DORMANT, UnitState.CONFORMANT):
             raise GovernanceError(
