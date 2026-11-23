@@ -13,6 +13,21 @@ license-files = ["LICENSE"]
 authors = [
     { name = "Caullen Omdahl" },
 ]
+keywords = [
+    "llm", "lora", "qlora", "adapters", "continual-learning", "mixture-of-experts",
+    "quantization", "sub-1-bit", "mlx", "llama.cpp", "gguf", "governance",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "numpy>=2.0,<3.0",
 ]
@@ -52,6 +67,12 @@ triton-rocm = [{ index = "pytorch-rocm", extra = "rocm" }]
 name = "pytorch-rocm"
 url = "https://download.pytorch.org/whl/rocm7.2"
 explicit = true
+
+[project.urls]
+Homepage = "https://github.com/CaullenOmdahl/subcor"
+Documentation = "https://github.com/CaullenOmdahl/subcor/tree/main/docs"
+Issues = "https://github.com/CaullenOmdahl/subcor/issues"
+Security = "https://github.com/CaullenOmdahl/subcor/security/policy"
 
 [project.scripts]
 subcor = "subcor.cli:main"

@@ -705,7 +705,7 @@ def main(argv: list[str] | None = None) -> int:
 
     mlx_moe_cmd = sub.add_parser(
         "mlx-moe",
-        help="Train & route two independent Sub-1-Bit Skill Units over one frozen 0.8B core with 0% general QA regression.",
+        help="Train & route two independent Sub-1-Bit Skill Units over one frozen 0.8B core with 0%% general QA regression.",
     )
     mlx_moe_cmd.add_argument("--model", type=str, default="mlx-community/Qwen3.5-0.8B-4bit")
     mlx_moe_cmd.add_argument("--work-dir", type=Path, default=None)

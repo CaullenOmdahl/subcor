@@ -77,8 +77,9 @@ CONFORMANT | ENABLED ──(export)────────► CaPheOS module.js
   3. **Conformance required:** A `DORMANT` or failed unit cannot be promoted to `ENABLED`. Conformance requires:
      - Baseline regression score $\ge \text{baseline\_before} - \text{max\_regression\_tolerance}$
      - Target skill/defect score strictly improved ($\ge \text{target\_before} + \text{min\_improvement}$)
-  4. **Atomic rollback:** Rolling back an `ENABLED` unit immediately marks it `ROLLED_BACK` and removes its delta from the active stack without touching the frozen base or unrelated units.
-  5. **Parameterization rule on export:** Exported CaPheOS bundles strip company-specific transcripts and secrets, exporting only portable weights, manifest, declared capabilities, and conformance test metadata.
+  4. **Owner-controlled policy:** The thresholds, anchor cases and router-gate negatives come from the server owner's `ConformancePolicy`. A proposer can tighten them or add cases, never loosen or replace them. The owner anchors are always scored, and the gate sees the worse of the anchor and proposer-baseline regressions. Non-finite or out-of-range scores and thresholds are rejected, including by direct `record_conformance` callers.
+  5. **Atomic rollback:** Rolling back an `ENABLED` unit immediately marks it `ROLLED_BACK` and removes its delta from the active stack without touching the frozen base or unrelated units.
+  6. **Parameterization rule on export:** Exported CaPheOS bundles strip company-specific transcripts and secrets, exporting only portable weights, manifest, declared capabilities, and conformance test metadata.
 
 ### 2.6 Apple Silicon Frozen Kernel & Live Intern Loop (`MLXKernel`, `TextTrajectoryStore`)
 - **Actor:** Intern seat running a compact quantized open-weight LLM (default `mlx-community/Qwen3.5-0.8B-4bit`, 652 MB, or any `mlx-lm` checkpoint such as Gemma 4 E2B QAT).
@@ -166,3 +167,97 @@ CONFORMANT | ENABLED ──(export)────────► CaPheOS module.js
 ### ADR-008: Portable `skill_spec.json` Source + `subcor recompile` for Kernel Upgrades
 - **Decision:** Accept that compiled `.scun` weight deltas are mathematically coupled to a specific `base_kernel_id`, and solve long-term portability by storing a sanitized `skill_spec.json` alongside every Skill Unit and providing `subcor recompile`.
 - **Why:** Just as software ships portable source code and recompiles binaries for new CPU architectures, storing the verified procedural spec + locked conformance cases lets an organization upgrade from a `0.8B` kernel to a newer `2B` or `4B` kernel and automatically re-verify its entire Skill Unit library without losing institutional habits.
+
+
+---
+
+## 4. Method Details
+
+The maths behind each component, for readers who want more than the contracts above. Where the idea for each piece came from is in [`BACKGROUND.md`](BACKGROUND.md).
+
+### 4.1 Immutable Quantized Base Kernel
+
+A compact open-weight quantized checkpoint $f_{\theta_0}$ (default `mlx-community/Qwen3.5-0.8B-4bit`, 24 layers, `1024 × 3584` MLP projections, `652 MB` on disk) is loaded once and frozen (`model.freeze()`). Base weights are strictly read-only (`writeable=False` in the NumPy core; `base.freeze()` in `SubcorMLXLinear`). Every target linear projection $W_{\text{base}} \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$ is wrapped so runtime inference computes:
+
+$$y = x W_{\text{base}}^T + \sum_{u \in \mathcal{A}(x)} \Delta_u(x)$$
+
+where $\mathcal{A}(x)$ is the set of Skill Units selected by the router for prompt $x$. For performance, mounted adapters pre-fold their scalar scale into $B$ at mount time and execute in the base model's native compute dtype (`bfloat16`/`float16`), eliminating per-token FP32 casts during decode.
+
+### 4.2 Verified Evidence Gate
+
+All runtime trajectories are appended to an immutable JSONL store (`TrajectoryStore` / `TextTrajectoryStore`). Each record carries a `VerificationEvidence(verified, verifier, method)` attestation. Live generations enter the store with `verified=False` until confirmed by either a deterministic verifier (schema check, unit test, exit code) or explicit senior-seat/owner review. Both contrastive activation extraction and distillation dataset export strictly exclude unverified records, preventing hallucinated student drafts from entering weight updates.
+
+### 4.3 Dual-Mode Adaptation Engine
+
+Empirical evidence shows that direct weight editing unblocks latent defects cleanly but cannot synthesize complex missing circuits from scratch. SUBCOR separates adaptation into two distinct modes:
+
+#### Mode A — Zero-Gradient Contrastive Weight-Space Surgery (`WeightSpaceSurgeon`)
+Given verified activation snapshots from failing/looping runs $H_{\text{fail}} \in \mathbb{R}^{N_f \times d_{\text{out}}}$ and clean passing runs $H_{\text{clean}} \in \mathbb{R}^{N_c \times d_{\text{out}}}$ at each instrumented layer $\ell$:
+
+1. Score layer $\ell$ by normalized contrastive separation:
+   $$S(\ell) = \frac{\|\mu_{\text{fail}}^{(\ell)} - \mu_{\text{clean}}^{(\ell)}\|_2}{\sqrt{\frac{1}{N_c}\sum_{i=1}^{N_c}\|h_{\text{clean},i}^{(\ell)} - \mu_{\text{clean}}^{(\ell)}\|_2^2 + \epsilon}}$$
+2. Construct a rank-$k$ orthonormal failure subspace $U_k \in \mathbb{R}^{d_{\text{out}} \times k}$ starting from the normalized mean-difference direction and supplemented by orthogonalized leading SVD components of $(H_{\text{fail}} - \mu_{\text{clean}})$.
+3. Synthesize a zero-gradient rank-$k$ ablation patch for $W_{\text{base}}^{(\ell)}$:
+   $$\Delta W^{(\ell)} = -\alpha \, U_k (U_k^T W_{\text{base}}^{(\ell)})$$
+   so $(W_{\text{base}}^{(\ell)} + \Delta W^{(\ell)})h = (I - \alpha U_k U_k^T) W_{\text{base}}^{(\ell)} h$, attenuating the failure direction while leaving orthogonal clean features invariant.
+
+#### Mode B — Function-Preserving Dynamic Expansion & Quantized Adaptation
+When the base model genuinely lacks a skill circuit, SUBCOR appends a new zero-initialized low-rank branch ($B_{\text{new}} = 0$ in FP32, or $s_{\text{out}} = 0$ in Binary STE) and verifies the **strict zero-perturbation invariant** before step 0:
+
+$$\max_x \|f_{\text{expanded}}(x) - f_{\text{base}}(x)\|_\infty = 0.0$$
+
+Only the newly attached branch is unfrozen and optimized over verified `(prompt, senior_correction)` pairs via completion-masked causal cross-entropy (`AdamW`, cosine decay, gradient norm clipping at `1.0`). For hybrid architectures such as Qwen3.5's GatedDeltaNet, the model switches cleanly to `model.train()` during adaptation (using differentiable MLX ops rather than inference-only Metal kernels) and returns to `model.eval()` and `model.freeze()` immediately after extraction. SUBCOR supports both FP32 warm-start followed by sub-1-bit factorization and opt-in Two-Stage Binary STE QAT (`_ste_sign_pm1` with clipped straight-through gradient $\mathbf{1}_{|z|\le 1}$).
+
+### 4.4 Sub-1-Bit Low-Rank Binary Factorization (`Sub1BitMatrix`)
+
+Inspired by NanoQuant, SUBCOR compresses any layer weight delta $\Delta W \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$ into bit-packed binary low-rank factors plus float16 scaling vectors:
+
+$$\Delta W \approx \operatorname{diag}(s_1)\,\left(U_{\pm 1}\operatorname{diag}(\sigma)V_{\pm 1}^T\right)\,\operatorname{diag}(s_2)$$
+
+where $U_{\pm 1} \in \{-1, +1\}^{d_{\text{out}} \times r}$ and $V_{\pm 1} \in \{-1, +1\}^{d_{\text{in}} \times r}$ are bit-packed into `uint8` buffers via `np.packbits` (1 bit per entry), and $s_1 \in \mathbb{R}^{d_{\text{out}}}$, $s_2 \in \mathbb{R}^{d_{\text{in}}}$, $\sigma \in \mathbb{R}^r$ are stored in `float16`.
+
+Fitting proceeds via:
+1. Row/column RMS pre-normalization.
+2. Greedy residual binary rank-1 decomposition initialized by **power iteration** (12 iterations for matrices with $\min(d_{\text{out}}, d_{\text{in}}) > 96$, avoiding $O(m^2 n)$ dense SVD) followed by alternating sign maximization $u_k \leftarrow \operatorname{sign}(R v_k)$, $v_k \leftarrow \operatorname{sign}(R^T u_k)$.
+3. Alternating closed-form least-squares refinement sweeps over $(U, V, \sigma)$, $s_1$, and $s_2$.
+
+Effective storage per dense parameter is:
+
+$$\text{bpw} = \frac{(d_{\text{out}} + d_{\text{in}})r + 16(d_{\text{out}} + d_{\text{in}} + r)}{d_{\text{out}} \, d_{\text{in}}}$$
+
+For `Qwen3.5-0.8B-4bit`'s `mlp.down_proj` layers ($d_{\text{out}} = 1024$, $d_{\text{in}} = 3584$, $3.67\text{M}$ weights/layer) at rank $r = 8$:
+- Parameter storage per layer is `110,720` bits (`13.5 KiB`) = **`0.0302 bits/weight`**.
+- Across 6 adapted layers (`22.02M` weights), a complete Skill Unit is **`81.4 KiB`**—**5.3× smaller** than stock FP16 `adapters.safetensors` (`433 KiB`) and **~530× smaller** than dense FP16 deltas.
+
+### 4.5 Training-Free Frozen-Base Activation-Space MoE Router (`MoESkillRouter`)
+
+To compose multiple Skill Units without cross-skill interference or general-knowledge forgetting, SUBCOR implements a **Shared Dense Core + Routed Skill Units** topology:
+
+1. **Invariant Prompt Tap (Early-Exit Prefill):** For any user prompt $p$ (evaluated with `system_prompt=None` so routing is strictly semantic), SUBCOR bypasses all mounted adapters (`_bypass_adapters=True`) and executes layers $0 \dots \ell_{\text{tap}}$ only—stopping immediately after $\ell_{\text{tap}}$ and skipping downstream layers plus the 248,320-token `lm_head`. The mean output activation at $\ell_{\text{tap}}$ is L2-normalized to produce an embedding $e(p) \in \mathbb{S}^{d-1}$ that is **mathematically invariant** to which Skill Units are installed or enabled.
+2. **Analytical Contrastive `RouterGate`:** Each Skill Unit stores a lightweight gate fitted analytically from verified positive prompt embeddings $E^+$ vs. verified negative/general embeddings $E^-$:
+   $$\mu_+ = \operatorname{unit}(\overline{E^+}), \quad \mu_- = \operatorname{unit}(\overline{E^-}), \quad s(e) = \langle e, \mu_+ \rangle - \langle e, \mu_- \rangle$$
+   The decision threshold $\tau$ is calibrated conservatively above $\max_{e \in E^-} s(e)$ (a 65/35 blend between $\max(s^-)$ and the 15th percentile of $s^+$ when separable).
+3. **Zero-Interference Fallback:** At inference time, `MoESkillRouter.route(e, top_k=1)` activates only units with $s_u(e) \ge \tau_u$. When no unit clears its threshold, $\mathcal{A}(x) = \emptyset$ and inference runs on the pure frozen base kernel with **exact zero perturbation**.
+
+### 4.6 Governed Skill Unit Lifecycle & Multi-Tenant Isolation
+
+Every Skill Unit is packaged into a content-addressed directory (`manifest.json`, `payload.scun`, optional `router_gate.json`) governed by a strict finite state machine:
+
+$$\texttt{DORMANT} \xrightarrow{\text{locked conformance pass}} \texttt{CONFORMANT} \xrightarrow{\text{approver} \neq \text{proposer}} \texttt{ENABLED} \xrightarrow{\text{atomic rollback}} \texttt{ROLLED\_BACK}$$
+
+Four invariants are enforced in code:
+- **Content Integrity:** Every load, promotion, and export verifies payload SHA-256 against `manifest.payload_sha256` (fail-closed `IntegrityError`).
+- **Locked Conformance Gate:** Candidate units must improve target capability by $\ge \Delta_{\min}$ while keeping baseline regression within tolerance $\epsilon_{\max}$. Both limits, the anchor cases and the router-gate negatives come from the server owner's `ConformancePolicy`; a study request may tighten the limits and add cases, never loosen or replace them, and every score and threshold must be finite and in range.
+- **No Self-Approval:** `promote(unit_id, approver)` raises `GovernanceError` whenever `approver == manifest.proposer`.
+- **Multi-Tenant Serving, Tool Calling, Streaming & Portable Export:** `SubcorHTTPServer` shares one frozen base kernel across $N$ isolated tenants (`subcor/<tenant_id>`), each with its own unit registry, trajectory store, and MoE router. `/v1/chat/completions` preserves full multi-turn conversation history, accepts OpenAI `tools` definitions and parses native XML/JSON `<tool_call>` blocks into structured `tool_calls`, and streams tokens incrementally via `mlx_lm.stream_generate` SSE. Promoted units export to both **CaPheOS format-2 `module.json` bundles** (including `router_gate.json`, `skill_spec.json`, `baseKernelId`, and runnable Node `conformance/test.js`) and stock **`mlx-lm` `adapters.safetensors`**.
+
+### 4.7 Cortical Handoff (`TurnConfidence`) & Cross-Kernel Recompilation (`subcor recompile`)
+
+To close the loop between subcortical speed and cortical reliability, every inference turn records per-token decode log-probabilities $\{ \ell_t \}_{t=1}^T$ alongside router margin $m = s_{u^*} - \tau_{u^*}$, repetition ratio, and token-limit exhaustion. `evaluate_turn_confidence()` computes geometric-mean token probability $\bar{p} = \exp(\frac{1}{T}\sum_t \ell_t)$ and worst-token probability $p_{\min} = \exp(\min_t \ell_t)$, raising `escalate_to_cortex = True` (surfaced via HTTP headers `X-SUBCOR-Escalate` and `X-SUBCOR-Confidence` and in `subcor.confidence`) whenever:
+1. the token budget is exhausted (`token_limit_exhausted`),
+2. n-gram repetition exceeds policy (`repetition_loop_detected`),
+3. a strict habitual seat receives an unmapped prompt (`no_matching_skill_unit`),
+4. $\bar{p} < 0.55$ (`low_decode_confidence`), or
+5. a localized uncertainty spike occurs ($p_{\min} < 0.05$ with $\bar{p} < 0.72$).
+
+To make learned habits durable across base-model upgrades, every Study Cycle persists a sanitized `skill_spec.json` (verified `(prompt, target)` pairs, locked evaluation and baseline anchor cases, negative routing prompts, and training hyperparameters) alongside the kernel-tagged manifest (`base_kernel_id`). Running `subcor recompile` against a newer or larger base checkpoint retrains each eligible unit from its `skill_spec.json`, passes it through the locked Conformance Gate, and places passing units in `CONFORMANT` (never self-enabled) for independent approval.
