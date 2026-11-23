@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from subcor.server import ServingKernel, TenantManager
+from subcor.server import ConformancePolicy, ServingKernel, TenantManager
 from subcor.types import SkillUnitManifest, UnitState
 from subcor.units import SkillUnitRegistry
 
@@ -27,7 +27,7 @@ class RecompiledUnitOutcome:
     unit_id: str
     source_kernel_id: str
     target_kernel_id: str
-    status: str  # "conformant" | "failed_conformance" | "skipped_no_spec"
+    status: str  # "conformant" | "failed_conformance" | "skipped_no_spec" | "rejected_policy"
     manifest: SkillUnitManifest | None = None
     reason: str = ""
 
@@ -61,6 +61,10 @@ class RecompileReport:
         return sum(1 for o in self.outcomes if o.status == "failed_conformance")
 
     @property
+    def rejected_policy_count(self) -> int:
+        return sum(1 for o in self.outcomes if o.status == "rejected_policy")
+
+    @property
     def skipped_count(self) -> int:
         return sum(1 for o in self.outcomes if o.status == "skipped_no_spec")
 
@@ -73,6 +77,7 @@ class RecompileReport:
             "conformant": self.conformant_count,
             "failed_conformance": self.failed_count,
             "skipped_no_spec": self.skipped_count,
+            "rejected_policy": self.rejected_policy_count,
             "outcomes": [o.to_dict() for o in self.outcomes],
         }
 
@@ -86,17 +91,22 @@ def recompile_units_for_kernel(
     include_states: tuple[UnitState, ...] = (UnitState.ENABLED, UnitState.CONFORMANT),
     steps_override: int | None = None,
     seed: int = 42,
+    conformance_policy: ConformancePolicy | None = None,
 ) -> RecompileReport:
     """Recompile all portable Skill Units from `source_units_dir` onto `kernel`.
 
     Every recompiled unit passes through the locked Conformance Gate and lands in
-    `CONFORMANT` (never self-enabled), preserving separation of duties.
+    `CONFORMANT` (never self-enabled), preserving separation of duties. Thresholds stored
+    in a spec are clamped to `conformance_policy` (the owner's limits): a spec can make
+    the gate stricter, never looser.
     """
+    policy = conformance_policy or ConformancePolicy()
     src_registry = SkillUnitRegistry(source_units_dir)
     dest_manager = TenantManager(
         state_dir=dest_state_dir,
         kernel=kernel,
         initial_tenants=(target_tenant,),
+        conformance_policy=policy,
     )
 
     outcomes: list[RecompiledUnitOutcome] = []
@@ -137,6 +147,25 @@ def recompile_units_for_kernel(
                 ],
             )
 
+        # Stored thresholds are clamped to the owner policy (stricter only). A spec whose
+        # stored thresholds are invalid (e.g. NaN) is reported, not fatal to the batch;
+        # any other error from the study cycle still propagates.
+        try:
+            tol, imp = policy.resolve(
+                min(spec.max_regression_tolerance, policy.max_regression_tolerance),
+                max(spec.min_target_improvement, policy.min_target_improvement),
+            )
+        except ValueError as exc:
+            outcomes.append(
+                RecompiledUnitOutcome(
+                    unit_id=spec.unit_id,
+                    source_kernel_id=src_manifest.base_kernel_id,
+                    target_kernel_id=kernel.model_id,
+                    status="rejected_policy",
+                    reason=str(exc),
+                )
+            )
+            continue
         res = dest_manager.run_study_cycle(
             target_tenant,
             unit_id=spec.unit_id,
@@ -156,8 +185,8 @@ def recompile_units_for_kernel(
             sub1bit_rank=spec.sub1bit_rank,
             steps=steps_override if steps_override is not None else spec.steps,
             lr=spec.lr,
-            max_regression_tolerance=spec.max_regression_tolerance,
-            min_target_improvement=spec.min_target_improvement,
+            max_regression_tolerance=tol,
+            min_target_improvement=imp,
             seed=seed + idx * 17,
         )
         new_manifest = SkillUnitManifest.from_dict(res["manifest"])

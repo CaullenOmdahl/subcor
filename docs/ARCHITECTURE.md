@@ -99,6 +99,7 @@ CONFORMANT | ENABLED ──(export)────────► CaPheOS module.js
 - **Observable contract:**
   - Each `RouterGate` is fitted analytically from verified positive vs. negative frozen-base embeddings (zero router backprop, zero small-batch router collapse).
   - Routing uses raw user prompt embeddings (no task-specific system prompt leakage).
+  - `seat_scope` is a routing hint, not access control. A scoped gate is filtered for any other seat; a library call with no (or a blank) seat considers every gate. The HTTP chat endpoint passes a seat to every backend that accepts one, as all built-in backends do (`X-CaPheOS-Seat`, missing or blank → `intern`). Tenant and principal checks remain the authorization boundary.
   - When no expert clears its calibrated threshold, `RoutingDecision.fell_back_to_base` is `True` and 0 experts are mounted — producing bit-identical frozen-base behavior (**0.0% general regression**).
   - Exported CaPheOS format-2 bundles include both `weights.scun` and `router_gate.json`.
 

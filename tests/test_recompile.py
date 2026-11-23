@@ -198,3 +198,66 @@ def test_recompile_migrates_skill_units_to_new_base_kernel(tmp_path: Path) -> No
     assert recompiled.manifest.payload_sha256 != v1_promoted.payload_sha256
 
     assert outcomes_by_id["legacy-no-spec"].status == "skipped_no_spec"
+
+
+def _v1_unit_with_spec(tmp_path: Path, **spec_overrides: object) -> Path:
+    """Train one unit on kernel v1, then rewrite its stored skill_spec.json thresholds."""
+    v1_state = tmp_path / "state-v1"
+    mgr = TenantManager(
+        state_dir=v1_state, kernel=_KernelStub("mock/qwen-v1-0.8b", 10), initial_tenants=("acme",)
+    )
+    mgr.ingest_trajectories(
+        "acme",
+        [
+            {
+                "task_family": "ops",
+                "prompt": "Event: Cloud invoice #101 exceeds cap",
+                "response": "bad",
+                "senior_correction": '{"code":"FIN-CAP"}',
+                "evidence": {"verified": True, "verifier": "senior"},
+            }
+        ],
+    )
+    mgr.run_study_cycle(
+        "acme",
+        unit_id="ops-skill-v1",
+        version="1.0.0",
+        task_family="ops",
+        title="Ops",
+        summary="Ops",
+        proposer="tools",
+        eval_cases=[{"prompt": "Event: Vendor invoice #999 over cap", "expected": "FIN-CAP"}],
+    )
+    units = v1_state / "tenants" / "acme" / "units"
+    spec_path = units / "ops-skill-v1" / "skill_spec.json"
+    data = json.loads(spec_path.read_text())
+    data.update(spec_overrides)
+    spec_path.write_text(json.dumps(data))
+    return units
+
+
+def test_recompile_clamps_looser_stored_thresholds_to_owner_policy(tmp_path: Path) -> None:
+    units = _v1_unit_with_spec(tmp_path, max_regression_tolerance=0.9, min_target_improvement=0.0)
+    report = recompile_units_for_kernel(
+        source_units_dir=units,
+        dest_state_dir=tmp_path / "state-v2",
+        target_tenant="acme",
+        kernel=_KernelStub("mock/qwen-v2-1.5b", 20),
+    )
+    assert len(report.outcomes) == 1
+    dest = SkillUnitRegistry(tmp_path / "state-v2" / "tenants" / "acme" / "units")
+    conf = dest.get_manifest("ops-skill-v1").conformance
+    assert conf is not None
+    assert (conf.max_regression_tolerance, conf.min_target_improvement) == (0.02, 0.25)
+
+
+def test_recompile_reports_invalid_stored_thresholds_without_aborting(tmp_path: Path) -> None:
+    units = _v1_unit_with_spec(tmp_path, min_target_improvement=float("nan"))
+    report = recompile_units_for_kernel(
+        source_units_dir=units,
+        dest_state_dir=tmp_path / "state-v2",
+        target_tenant="acme",
+        kernel=_KernelStub("mock/qwen-v2-1.5b", 20),
+    )
+    assert [o.status for o in report.outcomes] == ["rejected_policy"]
+    assert report.to_dict()["rejected_policy"] == 1
