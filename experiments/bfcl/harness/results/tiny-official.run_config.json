@@ -1,0 +1,41 @@
+{
+  "categories": [
+    "irrelevance",
+    "parallel",
+    "simple_python"
+  ],
+  "categories_arg": [
+    "simple_python",
+    "parallel",
+    "irrelevance"
+  ],
+  "display_name": "tiny-official",
+  "handler": "official",
+  "notes": "",
+  "official": {
+    "base_url": "http://127.0.0.1:8501/v1",
+    "handler_class": "bfcl_eval.model_handler.local_inference.qwen_fc.QwenFCHandler",
+    "hf_model": "Qwen/Qwen3.5-0.8B",
+    "is_fc_model": true,
+    "tokenizer_path": null,
+    "underscore_to_dot": false
+  },
+  "per_category": 2,
+  "registry": "Qwen/Qwen3.5-0.8B-FC",
+  "sample_seed": 0,
+  "selected_ids": {
+    "irrelevance": [
+      "irrelevance_98",
+      "irrelevance_216"
+    ],
+    "parallel": [
+      "parallel_107",
+      "parallel_194"
+    ],
+    "simple_python": [
+      "simple_python_20",
+      "simple_python_132"
+    ]
+  },
+  "temperature": 0.001
+}

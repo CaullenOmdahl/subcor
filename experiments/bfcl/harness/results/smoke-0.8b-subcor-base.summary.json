@@ -1,0 +1,122 @@
+{
+  "run_dir": "<scratchpad>/bfcl/harness/runs/smoke-0.8b-subcor-base",
+  "registry": "harness/smoke-0.8b-subcor-base-FC",
+  "handler": "native",
+  "endpoint": {
+    "api_key_env": null,
+    "backend": "subcor",
+    "base_url": "http://127.0.0.1:8571/v1",
+    "enable_thinking": false,
+    "extra_body": {},
+    "max_tokens": 4096,
+    "parallel_tool_calls": null,
+    "reasoning_history": "keep",
+    "request_timeout_s": 1800.0,
+    "served_model": "subcor/base"
+  },
+  "temperature": 0.001,
+  "categories_run": [
+    "irrelevance",
+    "live_multiple",
+    "multi_turn_base",
+    "parallel",
+    "simple_python"
+  ],
+  "categories_not_run": [
+    "simple_java",
+    "simple_javascript",
+    "multiple",
+    "parallel_multiple",
+    "live_simple",
+    "live_parallel",
+    "live_parallel_multiple",
+    "live_irrelevance",
+    "live_relevance",
+    "multi_turn_miss_func",
+    "multi_turn_miss_param",
+    "multi_turn_long_context",
+    "memory_kv",
+    "memory_vector",
+    "memory_rec_sum",
+    "web_search_base",
+    "web_search_no_snippet"
+  ],
+  "subset": true,
+  "coverage": {
+    "irrelevance": {
+      "n": 3,
+      "full": 240,
+      "correct": 3,
+      "acc": 100.0,
+      "inference_errors": 0
+    },
+    "live_multiple": {
+      "n": 3,
+      "full": 1053,
+      "correct": 1,
+      "acc": 33.33,
+      "inference_errors": 0
+    },
+    "multi_turn_base": {
+      "n": 1,
+      "full": 200,
+      "correct": 0,
+      "acc": 0.0,
+      "inference_errors": 1
+    },
+    "parallel": {
+      "n": 3,
+      "full": 200,
+      "correct": 0,
+      "acc": 0.0,
+      "inference_errors": 2
+    },
+    "simple_python": {
+      "n": 3,
+      "full": 400,
+      "correct": 1,
+      "acc": 33.33,
+      "inference_errors": 0
+    }
+  },
+  "columns": {
+    "Overall Acc": 5.31,
+    "Overall (no web search, renormalized; NOT official)": 8.85,
+    "Non-Live AST Acc": null,
+    "Non-Live Simple AST": null,
+    "Non-Live Multiple AST": null,
+    "Non-Live Parallel AST": 0.0,
+    "Non-Live Parallel Multiple AST": null,
+    "Live Acc": 0.33,
+    "Live Simple AST": null,
+    "Live Multiple AST": 33.33,
+    "Live Parallel AST": null,
+    "Live Parallel Multiple AST": null,
+    "Multi Turn Acc": 0.0,
+    "Multi Turn Base": 0.0,
+    "Multi Turn Miss Func": null,
+    "Multi Turn Miss Param": null,
+    "Multi Turn Long Context": null,
+    "Web Search Acc": null,
+    "Memory Acc": null,
+    "Memory KV": null,
+    "Memory Vector": null,
+    "Memory Recursive Summarization": null,
+    "Relevance Detection": null,
+    "Irrelevance Detection": null
+  },
+  "components": {
+    "non_live": 0.027777777777777776,
+    "live": 0.0033222591362126247,
+    "irrelevance": 0.5,
+    "multi_turn": 0.0,
+    "web_search": 0.0,
+    "memory": 0.0
+  },
+  "bfcl_csv_check": {
+    "bfcl_overall": 5.31,
+    "harness_overall": 5.31,
+    "columns_compared": 23,
+    "mismatched": {}
+  }
+}

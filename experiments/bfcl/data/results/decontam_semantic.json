@@ -1,0 +1,136 @@
+{
+  "bfcl_functions": 9476,
+  "bfcl_prompts": 8934,
+  "train": {
+    "rows": 2408,
+    "rows_hit_by_rule": {
+      "prompt_contained": 16,
+      "desc_minhash": 11,
+      "desc_exact": 7,
+      "prompt_ngram8": 7
+    },
+    "rows_hit_by_function_rule": 27
+  },
+  "dev": {
+    "rows": 205,
+    "rows_hit_by_rule": {
+      "desc_minhash": 3,
+      "desc_exact": 2
+    },
+    "rows_hit_by_function_rule": 3
+  },
+  "router_pos.jsonl": {
+    "rows": 300,
+    "from_rows_hit_by_function_rule": 7
+  },
+  "router_pos_dev.jsonl": {
+    "rows": 100,
+    "from_rows_hit_by_function_rule": 1
+  },
+  "a1_exemplars_hit": [],
+  "examples": [
+    {
+      "split": "train",
+      "id": "glaive-4480",
+      "rule": "desc_exact",
+      "train_fn": "calculate_tip",
+      "bfcl_fn": "calculate_tip"
+    },
+    {
+      "split": "train",
+      "id": "glaive-11098",
+      "rule": "desc_exact",
+      "train_fn": "calculate_tip",
+      "bfcl_fn": "calculate_tip"
+    },
+    {
+      "split": "train",
+      "id": "hermes-st-1023",
+      "rule": "desc_minhash",
+      "train_fn": "getCurrentWeather",
+      "bfcl_fn": "get_current_weather",
+      "jaccard": 0.714
+    },
+    {
+      "split": "train",
+      "id": "glaive-13658",
+      "rule": "desc_minhash",
+      "train_fn": "search_hotels",
+      "bfcl_fn": "hotel_search.find_hotels",
+      "jaccard": 0.714
+    },
+    {
+      "split": "train",
+      "id": "glaive-36576",
+      "rule": "desc_minhash",
+      "train_fn": "compute_average",
+      "bfcl_fn": "calculate_average",
+      "jaccard": 0.714
+    },
+    {
+      "split": "train",
+      "id": "glaive-39606",
+      "rule": "desc_exact",
+      "train_fn": "analyze_sentiment",
+      "bfcl_fn": "text_analysis.sentiment_analysis"
+    },
+    {
+      "split": "train",
+      "id": "toolace-345",
+      "rule": "desc_exact",
+      "train_fn": "Currency_Converter",
+      "bfcl_fn": "convert_currency"
+    },
+    {
+      "split": "train",
+      "id": "glaive-19279",
+      "rule": "desc_exact",
+      "train_fn": "calculate_tip",
+      "bfcl_fn": "calculate_tip"
+    },
+    {
+      "split": "train",
+      "id": "toolace-683",
+      "rule": "desc_exact",
+      "train_fn": "sentimentAnalysis_analyze",
+      "bfcl_fn": "text_analysis.sentiment_analysis"
+    },
+    {
+      "split": "train",
+      "id": "hermes-st-226",
+      "rule": "desc_minhash",
+      "train_fn": "getCurrentConditions",
+      "bfcl_fn": "get_current_weather",
+      "jaccard": 0.75
+    },
+    {
+      "split": "train",
+      "id": "glaive-334",
+      "rule": "desc_exact",
+      "train_fn": "calculate_tip",
+      "bfcl_fn": "calculate_tip"
+    },
+    {
+      "split": "dev",
+      "id": "hermes-st-514",
+      "rule": "desc_minhash",
+      "train_fn": "getCurrentWeather",
+      "bfcl_fn": "get_current_weather",
+      "jaccard": 0.75
+    },
+    {
+      "split": "dev",
+      "id": "glaive-38227",
+      "rule": "desc_exact",
+      "train_fn": "calculate_tip",
+      "bfcl_fn": "calculate_tip"
+    },
+    {
+      "split": "dev",
+      "id": "glaive-9851",
+      "rule": "desc_exact",
+      "train_fn": "analyze_sentiment",
+      "bfcl_fn": "text_analysis.sentiment_analysis"
+    }
+  ]
+}

@@ -1,0 +1,342 @@
+{
+  "seed": 20261121,
+  "sources": {
+    "hermes": {
+      "hf": "NousResearch/hermes-function-calling-v1",
+      "license": "apache-2.0"
+    },
+    "glaive": {
+      "hf": "glaiveai/glaive-function-calling-v2",
+      "license": "apache-2.0"
+    },
+    "toolace": {
+      "hf": "Team-ACE/ToolACE",
+      "license": "apache-2.0"
+    },
+    "apigenmt": {
+      "hf": "Salesforce/APIGen-MT-5k",
+      "license": "cc-by-nc-4.0"
+    }
+  },
+  "skipped_sources": {
+    "Salesforce/xlam-function-calling-60k": "gated (HTTP 401 without HF credentials)"
+  },
+  "bfcl_index": {
+    "prompts": 8934,
+    "functions": 9476,
+    "unique_schemas": 3464,
+    "files": {
+      "BFCL_v4_irrelevance.json": 240,
+      "BFCL_v4_live_irrelevance.json": 884,
+      "BFCL_v4_live_multiple.json": 1053,
+      "BFCL_v4_live_parallel.json": 16,
+      "BFCL_v4_live_parallel_multiple.json": 24,
+      "BFCL_v4_live_relevance.json": 16,
+      "BFCL_v4_live_simple.json": 258,
+      "BFCL_v4_memory.json": 155,
+      "BFCL_v4_multi_turn_base.json": 200,
+      "BFCL_v4_multi_turn_long_context.json": 200,
+      "BFCL_v4_multi_turn_miss_func.json": 200,
+      "BFCL_v4_multi_turn_miss_param.json": 200,
+      "BFCL_v4_multiple.json": 200,
+      "BFCL_v4_parallel.json": 200,
+      "BFCL_v4_parallel_multiple.json": 200,
+      "BFCL_v4_simple_java.json": 100,
+      "BFCL_v4_simple_javascript.json": 50,
+      "BFCL_v4_simple_python.json": 400,
+      "BFCL_v4_web_search.json": 100,
+      "memory_customer.json": 10,
+      "memory_finance.json": 7,
+      "memory_healthcare.json": 5,
+      "memory_notetaker.json": 5,
+      "memory_student.json": 10,
+      "BFCL_v4_chatable.json": 200,
+      "BFCL_v4_exec_multiple.json": 50,
+      "BFCL_v4_exec_parallel.json": 50,
+      "BFCL_v4_exec_parallel_multiple.json": 40,
+      "BFCL_v4_exec_simple.json": 100,
+      "BFCL_v4_multi_turn_composite.json": 200,
+      "BFCL_v4_rest.json": 70,
+      "BFCL_v4_sql.json": 100,
+      "func_doc:gorilla_file_system.json": 18,
+      "func_doc:math_api.json": 17,
+      "func_doc:memory_kv.json": 15,
+      "func_doc:memory_rec_sum.json": 5,
+      "func_doc:memory_vector.json": 12,
+      "func_doc:message_api.json": 10,
+      "func_doc:posting_api.json": 14,
+      "func_doc:ticket_api.json": 9,
+      "func_doc:trading_bot.json": 20,
+      "func_doc:travel_booking.json": 18,
+      "func_doc:vehicle_control.json": 22,
+      "func_doc:web_search.json": 2
+    }
+  },
+  "raw_records_screened": {
+    "hermes": 3786,
+    "toolace": 11300,
+    "apigenmt": 5000,
+    "glaive": 40000
+  },
+  "parse_drops": {
+    "hermes": {
+      "schema_invalid": 29,
+      "unparseable_json": 1586,
+      "result_count_mismatch": 167,
+      "too_long": 3
+    },
+    "toolace": {
+      "unparseable_call": 100,
+      "empty_assistant": 5,
+      "no_tools": 518,
+      "odd_format": 1567
+    },
+    "apigenmt": {
+      "too_long": 38,
+      "schema_invalid": 46,
+      "unknown_function": 199
+    },
+    "glaive": {
+      "no_tools": 12150,
+      "schema_invalid": 216,
+      "tool_name_collision": 119,
+      "unknown_function": 3,
+      "orphan_tool_result": 54,
+      "args_not_object": 4,
+      "double_assistant_text": 11,
+      "unparseable_json": 3
+    }
+  },
+  "parsed_valid": 43268,
+  "decontam_removed": {
+    "func_signature": 7405,
+    "intra_duplicate": 14044,
+    "func_schema_exact": 1592,
+    "minhash_jaccard": 52
+  },
+  "decontam_removed_by_source": {
+    "NousResearch/hermes-function-calling-v1": {
+      "func_signature": 11,
+      "intra_duplicate": 911
+    },
+    "Team-ACE/ToolACE": {
+      "func_signature": 7,
+      "intra_duplicate": 48
+    },
+    "Salesforce/APIGen-MT-5k": {
+      "func_schema_exact": 1511,
+      "func_signature": 3206
+    },
+    "glaiveai/glaive-function-calling-v2": {
+      "func_signature": 4181,
+      "intra_duplicate": 13085,
+      "minhash_jaccard": 52,
+      "func_schema_exact": 81
+    }
+  },
+  "bfcl_name_only_collisions_kept": 10212,
+  "available_after_decontam": {
+    "parallel_multiple": {
+      "NousResearch/hermes-function-calling-v1": 562,
+      "Team-ACE/ToolACE": 1404
+    },
+    "single": {
+      "NousResearch/hermes-function-calling-v1": 183,
+      "Team-ACE/ToolACE": 1090,
+      "glaiveai/glaive-function-calling-v2": 1144
+    },
+    "multiple": {
+      "NousResearch/hermes-function-calling-v1": 287,
+      "Team-ACE/ToolACE": 2429,
+      "glaiveai/glaive-function-calling-v2": 413
+    },
+    "parallel": {
+      "NousResearch/hermes-function-calling-v1": 37,
+      "Team-ACE/ToolACE": 1851
+    },
+    "clarify": {
+      "NousResearch/hermes-function-calling-v1": 2,
+      "Team-ACE/ToolACE": 30,
+      "glaiveai/glaive-function-calling-v2": 138
+    },
+    "irrelevance": {
+      "NousResearch/hermes-function-calling-v1": 8,
+      "Team-ACE/ToolACE": 1473,
+      "glaiveai/glaive-function-calling-v2": 137
+    },
+    "multi_turn": {
+      "Team-ACE/ToolACE": 455,
+      "glaiveai/glaive-function-calling-v2": 6040
+    },
+    "multi_turn_clarify": {
+      "glaiveai/glaive-function-calling-v2": 2168,
+      "Team-ACE/ToolACE": 32
+    },
+    "multi_step": {
+      "Team-ACE/ToolACE": 291,
+      "glaiveai/glaive-function-calling-v2": 1
+    }
+  },
+  "quotas": {
+    "single": 300,
+    "multiple": 400,
+    "parallel": 220,
+    "parallel_multiple": 180,
+    "irrelevance": 380,
+    "clarify": 170,
+    "multi_step": 180,
+    "multi_turn": 600,
+    "multi_turn_clarify": 270
+  },
+  "dev_dropped_near_dup_of_train": 87,
+  "clarify_derived_from_multi_turn_clarify": 141,
+  "train": {
+    "total": 2408,
+    "by_category": {
+      "clarify": 136,
+      "irrelevance": 360,
+      "multi_step": 162,
+      "multi_turn": 539,
+      "multi_turn_clarify": 209,
+      "multiple": 364,
+      "parallel": 202,
+      "parallel_multiple": 166,
+      "single": 270
+    },
+    "by_source": {
+      "NousResearch/hermes-function-calling-v1": 335,
+      "Team-ACE/ToolACE": 1163,
+      "glaiveai/glaive-function-calling-v2": 910
+    },
+    "by_category_source": {
+      "single": {
+        "NousResearch/hermes-function-calling-v1": 90,
+        "glaiveai/glaive-function-calling-v2": 93,
+        "Team-ACE/ToolACE": 87
+      },
+      "multiple": {
+        "glaiveai/glaive-function-calling-v2": 122,
+        "NousResearch/hermes-function-calling-v1": 117,
+        "Team-ACE/ToolACE": 125
+      },
+      "parallel": {
+        "Team-ACE/ToolACE": 167,
+        "NousResearch/hermes-function-calling-v1": 35
+      },
+      "parallel_multiple": {
+        "NousResearch/hermes-function-calling-v1": 85,
+        "Team-ACE/ToolACE": 81
+      },
+      "irrelevance": {
+        "Team-ACE/ToolACE": 221,
+        "glaiveai/glaive-function-calling-v2": 132,
+        "NousResearch/hermes-function-calling-v1": 7
+      },
+      "clarify": {
+        "glaiveai/glaive-function-calling-v2": 107,
+        "Team-ACE/ToolACE": 28,
+        "NousResearch/hermes-function-calling-v1": 1
+      },
+      "multi_step": {
+        "Team-ACE/ToolACE": 161,
+        "glaiveai/glaive-function-calling-v2": 1
+      },
+      "multi_turn": {
+        "glaiveai/glaive-function-calling-v2": 273,
+        "Team-ACE/ToolACE": 266
+      },
+      "multi_turn_clarify": {
+        "glaiveai/glaive-function-calling-v2": 182,
+        "Team-ACE/ToolACE": 27
+      }
+    },
+    "assistant_turns": 5276,
+    "tool_calls": 3178,
+    "truncated": 0,
+    "est_tokens_max": 3313
+  },
+  "dev": {
+    "total": 205,
+    "by_category": {
+      "clarify": 10,
+      "irrelevance": 18,
+      "multi_step": 18,
+      "multi_turn": 47,
+      "multi_turn_clarify": 18,
+      "multiple": 32,
+      "parallel": 18,
+      "parallel_multiple": 14,
+      "single": 30
+    },
+    "by_source": {
+      "NousResearch/hermes-function-calling-v1": 36,
+      "Team-ACE/ToolACE": 119,
+      "glaiveai/glaive-function-calling-v2": 50
+    },
+    "by_category_source": {
+      "single": {
+        "NousResearch/hermes-function-calling-v1": 10,
+        "Team-ACE/ToolACE": 13,
+        "glaiveai/glaive-function-calling-v2": 7
+      },
+      "multiple": {
+        "Team-ACE/ToolACE": 8,
+        "NousResearch/hermes-function-calling-v1": 17,
+        "glaiveai/glaive-function-calling-v2": 7
+      },
+      "parallel": {
+        "NousResearch/hermes-function-calling-v1": 2,
+        "Team-ACE/ToolACE": 16
+      },
+      "parallel_multiple": {
+        "Team-ACE/ToolACE": 9,
+        "NousResearch/hermes-function-calling-v1": 5
+      },
+      "irrelevance": {
+        "Team-ACE/ToolACE": 14,
+        "glaiveai/glaive-function-calling-v2": 3,
+        "NousResearch/hermes-function-calling-v1": 1
+      },
+      "clarify": {
+        "glaiveai/glaive-function-calling-v2": 7,
+        "NousResearch/hermes-function-calling-v1": 1,
+        "Team-ACE/ToolACE": 2
+      },
+      "multi_step": {
+        "Team-ACE/ToolACE": 18
+      },
+      "multi_turn": {
+        "Team-ACE/ToolACE": 34,
+        "glaiveai/glaive-function-calling-v2": 13
+      },
+      "multi_turn_clarify": {
+        "glaiveai/glaive-function-calling-v2": 13,
+        "Team-ACE/ToolACE": 5
+      }
+    },
+    "assistant_turns": 466,
+    "tool_calls": 299,
+    "truncated": 1,
+    "est_tokens_max": 3457
+  },
+  "train_long": {
+    "total": 0,
+    "by_category": {},
+    "by_source": {},
+    "by_category_source": {
+      "single": {},
+      "multiple": {},
+      "parallel": {},
+      "parallel_multiple": {},
+      "irrelevance": {},
+      "clarify": {},
+      "multi_step": {},
+      "multi_turn": {},
+      "multi_turn_clarify": {}
+    },
+    "assistant_turns": 0,
+    "tool_calls": 0,
+    "truncated": 0,
+    "est_tokens_max": 0
+  }
+}

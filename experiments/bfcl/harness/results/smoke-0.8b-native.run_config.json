@@ -1,0 +1,155 @@
+{
+  "categories": [
+    "irrelevance",
+    "live_irrelevance",
+    "live_multiple",
+    "live_parallel",
+    "live_parallel_multiple",
+    "live_relevance",
+    "live_simple",
+    "multi_turn_base",
+    "multi_turn_long_context",
+    "multi_turn_miss_func",
+    "multi_turn_miss_param",
+    "multiple",
+    "parallel",
+    "parallel_multiple",
+    "simple_java",
+    "simple_javascript",
+    "simple_python"
+  ],
+  "categories_arg": [
+    "non_live",
+    "live",
+    "multi_turn"
+  ],
+  "display_name": "Qwen3.5-0.8B-Q4_K_M native-FC (llama-server CPU)",
+  "endpoint": {
+    "api_key_env": null,
+    "backend": "llama-server",
+    "base_url": "http://127.0.0.1:8501/v1",
+    "enable_thinking": false,
+    "extra_body": {},
+    "max_tokens": 4096,
+    "parallel_tool_calls": null,
+    "reasoning_history": "keep",
+    "request_timeout_s": 1800.0,
+    "served_model": "qwen3.5-0.8b-q4km"
+  },
+  "handler": "native",
+  "notes": "",
+  "per_category": 5,
+  "per_category_multi_turn": 2,
+  "registry": "harness/smoke-0.8b-native-FC",
+  "sample_seed": 0,
+  "selected_ids": {
+    "irrelevance": [
+      "irrelevance_98",
+      "irrelevance_107",
+      "irrelevance_194",
+      "irrelevance_216",
+      "irrelevance_227"
+    ],
+    "live_irrelevance": [
+      "live_irrelevance_41-2-29",
+      "live_irrelevance_265-57-0",
+      "live_irrelevance_414-93-1",
+      "live_irrelevance_497-143-0",
+      "live_irrelevance_523-160-0"
+    ],
+    "live_multiple": [
+      "live_multiple_447-144-7",
+      "live_multiple_621-160-1",
+      "live_multiple_733-167-4",
+      "live_multiple_976-215-0",
+      "live_multiple_1033-261-0"
+    ],
+    "live_parallel": [
+      "live_parallel_1-0-1",
+      "live_parallel_2-0-2",
+      "live_parallel_4-1-0",
+      "live_parallel_12-8-0",
+      "live_parallel_15-11-0"
+    ],
+    "live_parallel_multiple": [
+      "live_parallel_multiple_4-3-0",
+      "live_parallel_multiple_8-7-0",
+      "live_parallel_multiple_17-15-0",
+      "live_parallel_multiple_19-16-1",
+      "live_parallel_multiple_22-19-0"
+    ],
+    "live_relevance": [
+      "live_relevance_1-1-0",
+      "live_relevance_9-9-0",
+      "live_relevance_10-10-0",
+      "live_relevance_11-11-0",
+      "live_relevance_14-14-0"
+    ],
+    "live_simple": [
+      "live_simple_51-23-0",
+      "live_simple_169-99-3",
+      "live_simple_181-106-0",
+      "live_simple_222-117-14",
+      "live_simple_241-125-4"
+    ],
+    "multi_turn_base": [
+      "multi_turn_base_80",
+      "multi_turn_base_156"
+    ],
+    "multi_turn_long_context": [
+      "multi_turn_long_context_52",
+      "multi_turn_long_context_163"
+    ],
+    "multi_turn_miss_func": [
+      "multi_turn_miss_func_122",
+      "multi_turn_miss_func_141"
+    ],
+    "multi_turn_miss_param": [
+      "multi_turn_miss_param_113",
+      "multi_turn_miss_param_133"
+    ],
+    "multiple": [
+      "multiple_3",
+      "multiple_15",
+      "multiple_23",
+      "multiple_66",
+      "multiple_140"
+    ],
+    "parallel": [
+      "parallel_102",
+      "parallel_160",
+      "parallel_171",
+      "parallel_181",
+      "parallel_184"
+    ],
+    "parallel_multiple": [
+      "parallel_multiple_0",
+      "parallel_multiple_62",
+      "parallel_multiple_85",
+      "parallel_multiple_126",
+      "parallel_multiple_156"
+    ],
+    "simple_java": [
+      "simple_java_8",
+      "simple_java_24",
+      "simple_java_41",
+      "simple_java_90",
+      "simple_java_93"
+    ],
+    "simple_javascript": [
+      "simple_javascript_9",
+      "simple_javascript_14",
+      "simple_javascript_15",
+      "simple_javascript_34",
+      "simple_javascript_36"
+    ],
+    "simple_python": [
+      "simple_python_41",
+      "simple_python_46",
+      "simple_python_163",
+      "simple_python_229",
+      "simple_python_260"
+    ]
+  },
+  "temperature": 0.001
+}

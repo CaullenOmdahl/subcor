@@ -1,0 +1,33 @@
+{
+  "categories": [
+    "memory_kv"
+  ],
+  "categories_arg": [
+    "memory_kv"
+  ],
+  "display_name": "Qwen3.5-0.8B memory_kv smoke",
+  "endpoint": {
+    "api_key_env": null,
+    "backend": "llama-server",
+    "base_url": "http://127.0.0.1:8501/v1",
+    "enable_thinking": false,
+    "extra_body": {},
+    "max_tokens": 4096,
+    "parallel_tool_calls": null,
+    "reasoning_history": "keep",
+    "request_timeout_s": 1800.0,
+    "served_model": "qwen3.5-0.8b-q4km"
+  },
+  "handler": "native",
+  "notes": "",
+  "per_category": 1,
+  "per_category_multi_turn": 0,
+  "registry": "harness/smoke-0.8b-memkv-FC",
+  "sample_seed": 0,
+  "selected_ids": {
+    "memory_kv": [
+      "memory_kv_101-student-21"
+    ]
+  },
+  "temperature": 0.001
+}

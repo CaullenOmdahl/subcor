@@ -1,0 +1,303 @@
+{
+  "run_dir": "<scratchpad>/bfcl/harness/runs/smoke-0.8b-native",
+  "registry": "harness/smoke-0.8b-native-FC",
+  "handler": "native",
+  "endpoint": {
+    "api_key_env": null,
+    "backend": "llama-server",
+    "base_url": "http://127.0.0.1:8501/v1",
+    "enable_thinking": false,
+    "extra_body": {},
+    "max_tokens": 4096,
+    "parallel_tool_calls": null,
+    "reasoning_history": "keep",
+    "request_timeout_s": 1800.0,
+    "served_model": "qwen3.5-0.8b-q4km"
+  },
+  "temperature": 0.001,
+  "categories_run": [
+    "irrelevance",
+    "live_irrelevance",
+    "live_multiple",
+    "live_parallel",
+    "live_parallel_multiple",
+    "live_relevance",
+    "live_simple",
+    "multi_turn_base",
+    "multi_turn_long_context",
+    "multi_turn_miss_func",
+    "multi_turn_miss_param",
+    "multiple",
+    "parallel",
+    "parallel_multiple",
+    "simple_java",
+    "simple_javascript",
+    "simple_python"
+  ],
+  "categories_not_run": [
+    "memory_kv",
+    "memory_vector",
+    "memory_rec_sum",
+    "web_search_base",
+    "web_search_no_snippet"
+  ],
+  "subset": true,
+  "coverage": {
+    "irrelevance": {
+      "n": 5,
+      "full": 240,
+      "correct": 5,
+      "acc": 100.0,
+      "inference_errors": 0
+    },
+    "live_irrelevance": {
+      "n": 5,
+      "full": 884,
+      "correct": 4,
+      "acc": 80.0,
+      "inference_errors": 0
+    },
+    "live_multiple": {
+      "n": 5,
+      "full": 1053,
+      "correct": 0,
+      "acc": 0.0,
+      "inference_errors": 0
+    },
+    "live_parallel": {
+      "n": 5,
+      "full": 16,
+      "correct": 3,
+      "acc": 60.0,
+      "inference_errors": 0
+    },
+    "live_parallel_multiple": {
+      "n": 5,
+      "full": 24,
+      "correct": 4,
+      "acc": 80.0,
+      "inference_errors": 0
+    },
+    "live_relevance": {
+      "n": 5,
+      "full": 16,
+      "correct": 3,
+      "acc": 60.0,
+      "inference_errors": 0
+    },
+    "live_simple": {
+      "n": 5,
+      "full": 258,
+      "correct": 2,
+      "acc": 40.0,
+      "inference_errors": 0
+    },
+    "multi_turn_base": {
+      "n": 2,
+      "full": 200,
+      "correct": 0,
+      "acc": 0.0,
+      "inference_errors": 0
+    },
+    "multi_turn_long_context": {
+      "n": 2,
+      "full": 200,
+      "correct": 0,
+      "acc": 0.0,
+      "inference_errors": 0
+    },
+    "multi_turn_miss_func": {
+      "n": 2,
+      "full": 200,
+      "correct": 0,
+      "acc": 0.0,
+      "inference_errors": 0
+    },
+    "multi_turn_miss_param": {
+      "n": 2,
+      "full": 200,
+      "correct": 0,
+      "acc": 0.0,
+      "inference_errors": 0
+    },
+    "multiple": {
+      "n": 5,
+      "full": 200,
+      "correct": 1,
+      "acc": 20.0,
+      "inference_errors": 0
+    },
+    "parallel": {
+      "n": 5,
+      "full": 200,
+      "correct": 0,
+      "acc": 0.0,
+      "inference_errors": 0
+    },
+    "parallel_multiple": {
+      "n": 5,
+      "full": 200,
+      "correct": 0,
+      "acc": 0.0,
+      "inference_errors": 0
+    },
+    "simple_java": {
+      "n": 5,
+      "full": 100,
+      "correct": 1,
+      "acc": 20.0,
+      "inference_errors": 0
+    },
+    "simple_javascript": {
+      "n": 5,
+      "full": 50,
+      "correct": 0,
+      "acc": 0.0,
+      "inference_errors": 0
+    },
+    "simple_python": {
+      "n": 5,
+      "full": 400,
+      "correct": 0,
+      "acc": 0.0,
+      "inference_errors": 0
+    }
+  },
+  "columns": {
+    "Overall Acc": 14.17,
+    "Overall (no web search, renormalized; NOT official)": 23.61,
+    "Non-Live AST Acc": 6.67,
+    "Non-Live Simple AST": 6.67,
+    "Non-Live Multiple AST": 20.0,
+    "Non-Live Parallel AST": 0.0,
+    "Non-Live Parallel Multiple AST": 0.0,
+    "Live Acc": 45.0,
+    "Live Simple AST": 40.0,
+    "Live Multiple AST": 0.0,
+    "Live Parallel AST": 60.0,
+    "Live Parallel Multiple AST": 80.0,
+    "Multi Turn Acc": 0.0,
+    "Multi Turn Base": 0.0,
+    "Multi Turn Miss Func": 0.0,
+    "Multi Turn Miss Param": 0.0,
+    "Multi Turn Long Context": 0.0,
+    "Web Search Acc": null,
+    "Memory Acc": null,
+    "Memory KV": null,
+    "Memory Vector": null,
+    "Memory Recursive Summarization": null,
+    "Relevance Detection": 60.0,
+    "Irrelevance Detection": 90.0
+  },
+  "components": {
+    "non_live": 0.06666666666666667,
+    "live": 0.45,
+    "irrelevance": 0.9,
+    "multi_turn": 0.0,
+    "web_search": 0.0,
+    "memory": 0.0
+  },
+  "bfcl_csv_check": {
+    "bfcl_overall": 14.17,
+    "harness_overall": 14.17,
+    "columns_compared": 23,
+    "mismatched": {}
+  },
+  "reference": {
+    "model": "Qwen3-0.6B (FC)",
+    "official_overall": 23.93,
+    "overall_with_official_web_search_and_missing_memory_imputed": 16.09,
+    "columns": {
+      "Overall Acc": {
+        "ours": 14.17,
+        "official": 23.93,
+        "delta": -9.76
+      },
+      "Non-Live AST Acc": {
+        "ours": 6.67,
+        "official": 71.79,
+        "delta": -65.12
+      },
+      "Non-Live Simple AST": {
+        "ours": 6.67,
+        "official": 64.17,
+        "delta": -57.5
+      },
+      "Non-Live Multiple AST": {
+        "ours": 20.0,
+        "official": 86.0,
+        "delta": -66.0
+      },
+      "Non-Live Parallel AST": {
+        "ours": 0.0,
+        "official": 67.5,
+        "delta": -67.5
+      },
+      "Non-Live Parallel Multiple AST": {
+        "ours": 0.0,
+        "official": 69.5,
+        "delta": -69.5
+      },
+      "Live Acc": {
+        "ours": 45.0,
+        "official": 56.62,
+        "delta": -11.62
+      },
+      "Live Simple AST": {
+        "ours": 40.0,
+        "official": 61.24,
+        "delta": -21.24
+      },
+      "Live Multiple AST": {
+        "ours": 0.0,
+        "official": 56.13,
+        "delta": -56.13
+      },
+      "Live Parallel AST": {
+        "ours": 60.0,
+        "official": 43.75,
+        "delta": 16.25
+      },
+      "Live Parallel Multiple AST": {
+        "ours": 80.0,
+        "official": 37.5,
+        "delta": 42.5
+      },
+      "Multi Turn Acc": {
+        "ours": 0.0,
+        "official": 3.62,
+        "delta": -3.62
+      },
+      "Multi Turn Base": {
+        "ours": 0.0,
+        "official": 5.5,
+        "delta": -5.5
+      },
+      "Multi Turn Miss Func": {
+        "ours": 0.0,
+        "official": 2.0,
+        "delta": -2.0
+      },
+      "Multi Turn Miss Param": {
+        "ours": 0.0,
+        "official": 3.0,
+        "delta": -3.0
+      },
+      "Multi Turn Long Context": {
+        "ours": 0.0,
+        "official": 4.0,
+        "delta": -4.0
+      },
+      "Relevance Detection": {
+        "ours": 60.0,
+        "official": 75.0,
+        "delta": -15.0
+      },
+      "Irrelevance Detection": {
+        "ours": 90.0,
+        "official": 80.84,
+        "delta": 9.16
+      }
+    }
+  }
+}

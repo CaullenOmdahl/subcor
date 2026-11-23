@@ -1,0 +1,46 @@
+{
+  "pos": {
+    "n": 300,
+    "by_category": {
+      "multi_turn_clarify": 43,
+      "multiple": 43,
+      "parallel_multiple": 43,
+      "multi_turn": 43,
+      "single": 42,
+      "parallel": 43,
+      "multi_step": 43
+    }
+  },
+  "pos_dev": {
+    "n": 100,
+    "by_category": {
+      "multiple": 14,
+      "parallel_multiple": 14,
+      "multi_turn_clarify": 14,
+      "single": 14,
+      "multi_step": 15,
+      "multi_turn": 15,
+      "parallel": 14
+    }
+  },
+  "neg": {
+    "n": 300,
+    "by_category": {
+      "classification": 20,
+      "brainstorming": 35,
+      "open_qa": 70,
+      "math": 60,
+      "general_qa": 50,
+      "creative_writing": 45,
+      "summarization": 20
+    },
+    "licences": {
+      "databricks/databricks-dolly-15k": "cc-by-sa-3.0",
+      "openai/gsm8k": "mit"
+    },
+    "decontam_drops": {
+      "duplicate": 1
+    },
+    "checked_against": "google/IFEval (541), GSM8K test (1319), BFCL v4 prompts"
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "categories": [
+    "irrelevance",
+    "live_multiple",
+    "multi_turn_base",
+    "parallel",
+    "simple_python"
+  ],
+  "categories_arg": [
+    "simple_python",
+    "parallel",
+    "live_multiple",
+    "irrelevance",
+    "multi_turn_base"
+  ],
+  "display_name": "Qwen3.5-0.8B-Q4_K_M via SUBCOR subcor/base (CPU)",
+  "endpoint": {
+    "api_key_env": null,
+    "backend": "subcor",
+    "base_url": "http://127.0.0.1:8571/v1",
+    "enable_thinking": false,
+    "extra_body": {},
+    "max_tokens": 4096,
+    "parallel_tool_calls": null,
+    "reasoning_history": "keep",
+    "request_timeout_s": 1800.0,
+    "served_model": "subcor/base"
+  },
+  "handler": "native",
+  "notes": "",
+  "per_category": 3,
+  "per_category_multi_turn": 1,
+  "registry": "harness/smoke-0.8b-subcor-base-FC",
+  "sample_seed": 0,
+  "selected_ids": {
+    "irrelevance": [
+      "irrelevance_98",
+      "irrelevance_194",
+      "irrelevance_216"
+    ],
+    "live_multiple": [
+      "live_multiple_82-37-0",
+      "live_multiple_530-151-6",
+      "live_multiple_861-181-2"
+    ],
+    "multi_turn_base": [
+      "multi_turn_base_130"
+    ],
+    "parallel": [
+      "parallel_77",
+      "parallel_103",
+      "parallel_124"
+    ],
+    "simple_python": [
+      "simple_python_183",
+      "simple_python_244",
+      "simple_python_298"
+    ]
+  },
+  "temperature": 0.001
+}

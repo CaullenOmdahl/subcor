@@ -772,3 +772,26 @@ def test_real_llama_server_loads_exported_lora_scale0_matches_base(tmp_path: Pat
     assert not any(_pid_alive(p) for p in pids)
     with pytest.raises((urllib.error.URLError, ConnectionError, OSError)):
         _http_json(f"http://127.0.0.1:{port}/health", timeout=2)
+
+
+def test_f16_export_stores_f16_tensors_that_reconstruct_the_f32_export(
+    tmp_path: Path, base_gguf: Path, mixed_unit: SkillUnitRegistry
+) -> None:
+    out32 = tmp_path / "u32.gguf"
+    out16 = tmp_path / "u16.gguf"
+    export_unit_to_gguf_lora(mixed_unit, "u-mixed", out32, base_gguf=base_gguf)
+    export_unit_to_gguf_lora(mixed_unit, "u-mixed", out16, base_gguf=base_gguf, tensor_dtype="f16")
+    r32 = {t.name: t for t in gguf.GGUFReader(str(out32)).tensors}
+    r16 = {t.name: t for t in gguf.GGUFReader(str(out16)).tensors}
+    assert set(r16) == set(r32)
+    for name, t16 in r16.items():
+        assert t16.tensor_type == gguf.GGMLQuantizationType.F16
+        assert r32[name].tensor_type == gguf.GGMLQuantizationType.F32
+        assert [int(v) for v in t16.shape] == [int(v) for v in r32[name].shape]
+        ref = _as_f64(r32[name])
+        np.testing.assert_allclose(_as_f64(t16), ref, rtol=1e-3, atol=1e-6)
+    assert out16.stat().st_size < out32.stat().st_size
+    with pytest.raises(ValueError, match="tensor_dtype"):
+        export_unit_to_gguf_lora(
+            mixed_unit, "u-mixed", tmp_path / "bad.gguf", base_gguf=base_gguf, tensor_dtype="q8"
+        )

@@ -1,0 +1,14 @@
+registry,category,id,correct,error_type,inference_error
+harness/smoke-0.8b-subcor-base-FC,live_multiple,live_multiple_82-37-0,0,ast_decoder:decoder_failed,0
+harness/smoke-0.8b-subcor-base-FC,live_multiple,live_multiple_530-151-6,1,,0
+harness/smoke-0.8b-subcor-base-FC,live_multiple,live_multiple_861-181-2,0,ast_decoder:decoder_failed,0
+harness/smoke-0.8b-subcor-base-FC,multi_turn_base,multi_turn_base_130,0,,1
+harness/smoke-0.8b-subcor-base-FC,irrelevance,irrelevance_98,1,,0
+harness/smoke-0.8b-subcor-base-FC,irrelevance,irrelevance_194,1,,0
+harness/smoke-0.8b-subcor-base-FC,irrelevance,irrelevance_216,1,,0
+harness/smoke-0.8b-subcor-base-FC,parallel,parallel_77,0,ast_decoder:decoder_failed,0
+harness/smoke-0.8b-subcor-base-FC,parallel,parallel_103,0,ast_decoder:decoder_failed,1
+harness/smoke-0.8b-subcor-base-FC,parallel,parallel_124,0,ast_decoder:decoder_failed,1
+harness/smoke-0.8b-subcor-base-FC,simple_python,simple_python_183,1,,0
+harness/smoke-0.8b-subcor-base-FC,simple_python,simple_python_244,0,ast_decoder:decoder_failed,0
+harness/smoke-0.8b-subcor-base-FC,simple_python,simple_python_298,0,ast_decoder:decoder_failed,0

@@ -92,6 +92,8 @@ SUPPORTED_PROJECTIONS: dict[str, str] = {
     "linear_attn.out_proj": "ssm_out",
 }
 
+_TENSOR_DTYPES: dict[str, Any] = {"f32": np.float32, "f16": np.float16}
+
 _LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)\.(.+)$")
 _QWEN35_ARCHES = frozenset({"qwen35", "qwen35moe"})
 _LLAMA_PERMUTE_ARCHES = frozenset({"llama"})
@@ -300,6 +302,7 @@ def export_unit_to_gguf_lora(
     out_path: Path,
     *,
     base_gguf: Path,
+    tensor_dtype: str = "f32",
 ) -> Path:
     """Write Skill Unit `unit_id` as a llama.cpp LoRA adapter GGUF at `out_path`.
 
@@ -310,8 +313,13 @@ def export_unit_to_gguf_lora(
     request; `--lora-init-without-apply` alone still applies it at scale 1.0 on
     llama.cpp b12110); scale 1.0 applies the unit's delta exactly, scale 0.0 is the
     base model. Sub-1-bit units are written as their reconstructed dense
-    low-rank factors (see module docstring). Returns `out_path`.
+    low-rank factors (see module docstring). `tensor_dtype="f16"` stores the
+    `lora_a` / `lora_b` tensors as F16 (what `convert_lora_to_gguf.py --outtype f16`
+    writes) instead of F32. Returns `out_path`.
     """
+    if tensor_dtype not in _TENSOR_DTYPES:
+        raise ValueError(f"tensor_dtype must be one of {sorted(_TENSOR_DTYPES)}")
+    np_dtype = _TENSOR_DTYPES[tensor_dtype]
     gguf = _require_gguf()
     out_path = Path(out_path)
     manifest = registry.get_manifest(unit_id)
@@ -340,8 +348,14 @@ def export_unit_to_gguf_lora(
         writer.add_string("subcor.base_kernel_id", manifest.base_kernel_id)
         writer.add_string("subcor.encoding", manifest.encoding.value)
         for t in tensors:
-            writer.add_tensor(f"{t.base_tensor}.lora_a", t.a)
-            writer.add_tensor(f"{t.base_tensor}.lora_b", t.b)
+            for suffix, arr in (("lora_a", t.a), ("lora_b", t.b)):
+                cast = np.ascontiguousarray(arr, dtype=np_dtype)
+                if not np.all(np.isfinite(cast)):
+                    raise ValueError(
+                        f"Unit '{unit_id}' tensor {t.base_tensor}.{suffix} is not finite "
+                        f"as {tensor_dtype}"
+                    )
+                writer.add_tensor(f"{t.base_tensor}.{suffix}", cast)
         writer.write_header_to_file()
         writer.write_kv_data_to_file()
         writer.write_tensors_to_file()
