@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from subcor.bfcl import (
     BFCLCase,
     _gt_entry_to_call_dict,
@@ -149,7 +151,7 @@ def test_gt_entry_to_call_dict_handles_optional_and_falsy_values() -> None:
 
 
 def test_load_bfcl_disjoint_onpolicy_examples_zero_leakage(tmp_path: Path, monkeypatch) -> None:
-    import huggingface_hub
+    huggingface_hub = pytest.importorskip("huggingface_hub")
 
     q_simple = tmp_path / "BFCL_v3_simple.json"
     a_simple = tmp_path / "ans_simple.json"
@@ -292,7 +294,7 @@ def test_load_bfcl_disjoint_onpolicy_examples_zero_leakage(tmp_path: Path, monke
 def test_collect_bfcl_onpolicy_self_distill_separates_corrections_and_replays(
     tmp_path: Path, monkeypatch
 ) -> None:
-    import huggingface_hub
+    huggingface_hub = pytest.importorskip("huggingface_hub")
 
     q_simple = tmp_path / "BFCL_v3_simple.json"
     a_simple = tmp_path / "ans_simple.json"
