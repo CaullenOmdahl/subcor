@@ -231,5 +231,7 @@ docs/
 
 ## Licensing
 
-- **Core Runtime:** `AGPL-3.0-or-later`
+- **Core Runtime:** `AGPL-3.0-or-later`. The full text is in [`LICENSE`](LICENSE).
 - **Exported Skill Units:** Default `Apache-2.0` (compatible with Apache-2.0 base checkpoints such as Gemma 4 / Qwen 3.5 and CaPheOS unit licensing)
+- **Model weights are not part of SUBCOR.** Base checkpoints (GGUF, MLX or Hugging Face) are downloaded separately and keep their own licenses, which every deployment must follow. A Skill Unit is trained against a specific base, so check that the base's terms allow the unit's license before distributing it.
+- **Third-party software** keeps its own license: NumPy and the optional extras (MLX, PyTorch, Transformers, `gguf`, ...) are installed as dependencies, and `llama-server` (llama.cpp) runs as a separate, user-installed binary. None of them is vendored in this repository.
