@@ -1,237 +1,255 @@
-# SUBCOR — Sub-Bit Unit-Based Continual On-Policy Runtime
+# SUBCOR
 
-**Governed sub-1-bit, MoE-routed Skill Units for self-learning compact language models.**
+**Teach a small local model new skills without ever touching its weights, and without letting
+it approve its own changes.**
 
-SUBCOR turns a tiny, frozen 4-bit open-weight model (default **`Qwen3.5-0.8B-4bit`**, 652 MB, running locally at `154 tok/s` on Apple Silicon) into a **self-learning, multi-tenant subcortical runtime**. Rather than cramming encyclopedic facts into weights, SUBCOR packages **procedural workflows, decision policies, and parsing discipline** into audited, **`~81 KiB` (`0.0302 bits/weight`) Skill Units**—like swappable **drill bits on an impact drill**—while factual memory stays in normal context, RAG, and MCP tools. Units are dynamically routed per prompt, monitor decode uncertainty to hand novel cases back to a frontier model (**Cortical Handoff**), recompile automatically when you upgrade the base model (`subcor recompile`), block self-approval, roll back atomically, and export as portable **CaPheOS format-2 capability units**.
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
+![Python 3.12 | 3.13](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue.svg)
+![Backends: MLX · llama.cpp · PyTorch](https://img.shields.io/badge/backends-MLX%20%C2%B7%20llama.cpp%20%C2%B7%20PyTorch-informational.svg)
 
-> **Methodology Preprint:** See [docs/PAPER.md](docs/PAPER.md) for the Cortical-Subcortical cognitive thesis, mathematical formulation, empirical results (including negative findings), and limitations.
+The name stands for *Sub-Bit Unit-Based Continual On-Policy Runtime*.
 
----
-
-## Cognitive Model: Impact Drill + Recompilable Bits
-
-| Brain Analogy | SUBCOR Component | Role |
-|---|---|---|
-| **Working Memory** | Context window, RAG, MCP tools | Holds facts, documents, and live state (never stuffed into weights) |
-| **Prefrontal Cortex** | Frontier senior seats (Claude / GPT / Gemini) | Handles novel planning, ambiguous edge cases, and verifies corrections |
-| **Basal Ganglia** | Frozen `MoESkillRouter` + `RouterGate` | Recognizes familiar routines (`18.3 ms`) and selects the matching `~81 KiB` drill bit |
-| **Cerebellum** | Routed Sub-1-Bit Skill Units (`0.0302 bpw`) | Smooths repeatable execution: routing, tool calling, structured parsing, policy gates |
-| **Thalamic Switch** | `TurnConfidence` (`X-SUBCOR-Escalate`) | Detects decode uncertainty, loops, or unmapped tasks and hands control back to Cortex |
-
----
-
-## Architecture
+SUBCOR keeps a quantized open-weight model (Qwen 3.5 0.8B–9B, Gemma 4, any `mlx-lm` or GGUF
+checkpoint) **frozen**, and adds what it learns as tiny, separate **Skill Units**. Each one
+is a low-rank weight delta packed to well under one bit per weight, often under 100 KiB. A
+training-free router mounts a unit only when a prompt calls for it. Every unit has to earn
+its place through a locked regression check and a second party's approval, and can be
+rolled back instantly to the exact original model.
 
 ```text
-Incoming Multi-Turn Chat + OpenAI Tools (/v1/chat/completions — JSON or token SSE)
-        │
-        ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 1. Frozen Quantized Base Kernel (e.g., Qwen3.5-0.8B-4bit · 652 MB)      │
-│    • Strictly read-only base weights; shared across 1..N tenants        │
-│    • Early-exit tap (layers 0..18, skips lm_head) -> 18.3 ms embedding  │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 2. Activation-Space MoE Skill Router (subcor.router)                   │
-│    • Training-free contrastive RouterGate per enabled Skill Unit        │
-│    • Invariant to installed units (taps frozen base with bypass=True)   │
-│    • Selects top-k matching unit OR 0 units (pure base = 0% forgetting) │
-└───────────────┬────────────────────┼────────────────────┬───────────────┘
-                ▼                    ▼                    ▼
-        [Pure Frozen Base]   [Skill Unit 1: 81 KiB] [Skill Unit 2: 81 KiB]
-         General QA & Chat     0.0302 bits/weight     0.0302 bits/weight
-         (+0.0 pp regression)  SHA-256 + skill_spec   SHA-256 + skill_spec
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│ 3. Cortical Handoff / Thalamic Switch (subcor.confidence)              │
-│    • Scores per-token decode logprobs, router margin, & loop ratio      │
-│    • Emits X-SUBCOR-Escalate, X-SUBCOR-Confidence, & subcor.confidence  │
-│    • Parses native XML/JSON <tool_call> blocks into OpenAI tool_calls   │
-└─────────────────────────────────────────────────────────────────────────┘
+   frozen 4-bit base  +  routed ~66–290 KiB Skill Units  +  governance gates
+   (never modified)      (one per skill, swappable)         (verified evidence, no
+                                                             regression, no self-approval)
 ```
 
-### Governed Adaptation Loop (How New Skill Units Are Born)
+## Why it's interesting
 
-1. **Verified Evidence Gate** (`subcor.telemetry`, `subcor.intern`) — Only trajectories attested by a deterministic verifier or senior-seat/owner sign-off can enter diagnosis or learning; unverified outputs are excluded.
-2. **Dual-Mode Weight Adaptation**:
-   - **Zero-Gradient Weight-Space Surgery** (`subcor.surgeon`) — Contrastive activation profiling isolates structural failure directions (such as repetition loops) and synthesizes rank-$k$ ablation patches $\Delta W = -\alpha U(U^T W_{\text{base}})$ without gradient descent.
-   - **Function-Preserving Dynamic Expansion** (`subcor.expansion`, `subcor.backends.mlx_kernel`) — Appends zero-initialized low-rank branches (`max|logits_after - logits_before| = 0.0`) and trains only the new weights via MLX GPU autodiff (FP32 warm-start or opt-in Two-Stage Binary STE QAT).
-3. **Sub-1-Bit Binary Compression** (`subcor.sub1bit`) — Packs deltas as $\Delta W \approx \operatorname{diag}(s_1)(U_{\pm 1}\operatorname{diag}(\sigma)V_{\pm 1}^T)\operatorname{diag}(s_2)$ using `np.packbits` (`0.0302 bits/weight`, **5.3× smaller than FP16 `adapters.safetensors`**).
-4. **Governed Lifecycle & Atomic Rollback** (`subcor.units`) — `DORMANT → CONFORMANT → ENABLED → ROLLED_BACK` with SHA-256 tamper detection, locked regression conformance gate, **separation of duties (`approver != proposer`)**, and bit-identical rollback (`0.0e+00` logit diff).
+On the official **Berkeley Function Calling Leaderboard (BFCL v3)**, scored on 120 held-out
+cases with no overlap with the training stream:
 
----
+| Model | Frozen base | + one SUBCOR Skill Unit | Unit size | General-QA anchors |
+|---|---:|---:|---:|---:|
+| Qwen3.5-0.8B-4bit | 40.8% | **62.5%** (+21.7 pp) | **66 KiB** | 80% → 80% (no forgetting) |
+| Qwen3.5-4B-4bit | 81.7% | **83.3%** (+1.7 pp, no category regressed) | 164 KiB | 80% → 80% |
 
-## Verified Empirical Highlights (`Qwen3.5-0.8B-4bit`, Apple M5)
+- **The 0.8B gain is 21.7 points in 77 seconds of training on a laptop.** The sub-1-bit
+  unit matches its own 16× larger FP32 version case for case, and mean latency dropped from
+  1,779 ms to 1,033 ms.
+- **On-policy beats naive fine-tuning.** Training only on verified corrections of the
+  model's own failures, plus replays of its own correct outputs, beats fine-tuning on ground
+  truth. On the 4B, naive SFT lost 3.4 points and was blocked by the gate. Details and
+  negative results are in [`docs/BFCL-POC-REPORT.md`](docs/BFCL-POC-REPORT.md).
+- **Adding units doesn't cost general ability.** Routed units are mounted only when their
+  gate fires, so on a fixed 5-axis benchmark the locked general-reasoning and
+  instruction-following anchors moved **+0.0 pp** while two skills were added. Mounting a
+  unit densely, by contrast, cost 16.6 points of general QA (83.3% → 66.7%)
+  ([`docs/BENCHMARK-REPORT.md`](docs/BENCHMARK-REPORT.md)).
+- **Adding or removing a unit is exact.** A new unit starts zero-initialized, and the logit
+  difference before training is `0.0e+00`. Rollback restores the base logits bit for bit.
+- **It runs on hardware you already have.**
+  - Apple M5 laptop: 154 tok/s serving a 0.8B over HTTP.
+  - AMD RX 6800 (16 GB), via a supervised `llama-server`: ~300 tok/s on a 0.8B and ~110
+    tok/s on a 4B, while training units on the same card
+    ([`docs/AMD-GGUF.md`](docs/AMD-GGUF.md)).
 
-Measured live on the content-hashed 5-axis **`subcor-core-v1@1.0.0`** benchmark (`sha256:1732c1fcad55`, full report in [docs/BENCHMARK-REPORT.md](docs/BENCHMARK-REPORT.md)):
+## How it works
 
-| Metric | Measured Result |
-|---|---|
-| Frozen Base Kernel Size | **652 MB** (`mlx-community/Qwen3.5-0.8B-4bit`) |
-| Sustained HTTP Decode Speed (AC Power) | **154.1 tok/s** (`245 tokens` in `1.59s`) |
-| Early-Exit Routing Tap Overhead | **18.3 ms/prompt** (skips layers 19–23 & `lm_head`) |
-| Skill Unit Size (6 layers, `22.0M` weights) | **81.4 KiB** (**`0.0302 bits/weight`**, vs. `433 KiB` FP16 LoRA) |
-| Zero-Perturbation Expansion & Rollback | **`0.0e+00`** max logit diff |
-| Unseen Ops Routing Growth | **`0.0% → 60%–80%`** (`100.0%` semantic routing accuracy) |
-| Locked Anchor Retention (`general_reasoning`, `instruction_discipline`) | **`+0.0 pp` regression** (`80.0% → 80.0%` preserved; `structured_json` also `+0.0 pp`) |
-| Multi-Unit Routed Turn Latency | **`171 ms` (base) → `137 ms` (2 routed units)** |
+```text
+ chat request (/v1/chat/completions, multi-turn, OpenAI tools, SSE streaming)
+        │
+        ▼
+ ┌─────────────────────────────────────────────┐
+ │ Frozen quantized base model                 │  read-only, shared by every tenant
+ │  └─ early-exit tap → prompt embedding       │  ~18 ms, skips the upper layers and lm_head
+ └──────────────────────┬──────────────────────┘
+                        ▼
+ ┌─────────────────────────────────────────────┐
+ │ Router: one analytic gate per enabled unit  │  no training, no router collapse
+ │  top-k units that clear their threshold     │  none clears → pure base, zero perturbation
+ └───────┬───────────────┬───────────────┬─────┘
+         ▼               ▼               ▼
+     [ base ]      [ unit A ]      [ unit B ]       low-rank deltas, sub-1-bit packed,
+                                                    SHA-256 checked on every load
+                        ▼
+ ┌─────────────────────────────────────────────┐
+ │ Confidence check                            │  low decode confidence, loops or an
+ │  X-SUBCOR-Escalate / X-SUBCOR-Confidence     │  unmatched prompt → hand back to a
+ └─────────────────────────────────────────────┘  bigger model
+```
 
----
+### How a Skill Unit is born
+
+1. **Only verified evidence goes in.** Trajectories enter an append-only store. Only those
+   confirmed by a deterministic verifier (a schema check, a test, an exit code) or a human
+   or senior-model reviewer can be used for training.
+2. **Adapt, one of two ways.**
+   - **Zero-gradient surgery** finds a failure direction from activations and projects it
+     out. This suits structural defects such as loops.
+   - **Function-preserving expansion** adds a zero-initialized low-rank branch and trains
+     only that branch. This suits skills the base doesn't have yet.
+3. **Pack the delta to sub-1-bit.** Binary low-rank factors plus fp16 scales come to about
+   0.02–0.04 bits per weight, about 5× smaller than an FP16 LoRA file.
+4. **Gate it.** The unit moves `DORMANT → CONFORMANT` only if it improves its target and the
+   owner's locked anchors don't regress. A proposer can make the gate stricter, never
+   looser.
+5. **Approve it.** It moves `CONFORMANT → ENABLED` only when someone other than the proposer
+   promotes it.
+6. **Roll back any time.** `ENABLED → ROLLED_BACK` atomically, per unit.
+
+Each unit also stores a portable `skill_spec.json`. When you upgrade the base model,
+`subcor recompile` retrains every unit onto the new base and re-verifies it.
+
+The maths is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#4-method-details). Where the
+ideas came from, and what we think is actually new, is in
+[`docs/BACKGROUND.md`](docs/BACKGROUND.md).
 
 ## Quickstart
 
-Requires Python 3.12 or 3.13 and [`uv`](https://docs.astral.sh/uv/).
+You need Python 3.12 or 3.13 and [`uv`](https://docs.astral.sh/uv/).
 
-### 1. Core Engine & Synthetic Proving Ground (CPU, NumPy-only, ~1s)
-
-```bash
-uv sync --extra dev --python 3.12
-uv run pytest -v
-uv run subcor demo --export-capheos ./out/capheos-units
-```
-
-### 2. Apple Silicon Live MLX Workflows (`Qwen3.5-0.8B-4bit` or any `--model`)
+### 1. See the whole loop in about a second (CPU, NumPy only)
 
 ```bash
-uv sync --extra dev --extra mlx --python 3.12
-
-# Live two-expert Routed MoE Skill Layer (shared 0.8B core + 2 sub-1-bit experts)
-uv run --extra mlx subcor mlx-moe --export-capheos ./out/capheos-moe-units
-
-# Live single-skill On-Policy Intern distillation + dual export
-uv run --extra mlx subcor mlx-intern \
-  --export-capheos ./out/capheos-units \
-  --export-safetensors ./out/mlx-lora
-
-# Live zero-gradient contrastive activation diagnosis & rank-1 ablation
-uv run --extra mlx subcor mlx-surgery
+git clone https://github.com/CaullenOmdahl/subcor.git && cd subcor
+uv sync --extra dev
+uv run subcor demo
 ```
 
-### 3. Multi-Tenant OpenAI-Compatible & Governed Server
+The demo runs a synthetic network with an injected thinking loop and a missing skill. In one
+run you can watch:
 
-Serves one frozen `652 MB` base model to multiple isolated tenants (e.g., two CaPheOS instances) with OpenAI `/v1/chat/completions` (JSON + SSE streaming), Ollama `/api/tags` discovery, and governed control endpoints:
+- zero-gradient surgery remove the loop;
+- expansion learn the missing skill, packed to under 1 bit per weight;
+- a poisoned patch get rejected and a self-approval get blocked;
+- a rollback restore the earlier state.
+
+### 2. Apple Silicon (MLX)
 
 ```bash
-uv run --extra mlx subcor serve \
-  --host 127.0.0.1 \
-  --port 8420 \
-  --state-dir ~/.local/share/subcor \
-  --tenant company-a \
-  --tenant company-b
+uv sync --extra dev --extra mlx
+uv run --extra mlx subcor mlx-moe        # two routed skills on one frozen 0.8B, general QA unchanged
+uv run --extra mlx subcor mlx-intern     # learn one skill from verified corrections, export it
+uv run --extra mlx subcor mlx-surgery    # zero-gradient activation diagnosis and ablation
 ```
 
-Optional bearer auth: set `SUBCOR_API_KEY=...` or pass `--api-key`. See [docs/CAPHEOS-INTEGRATION.md](docs/CAPHEOS-INTEGRATION.md) for connecting multiple CaPheOS instances over an encrypted SSH loopback tunnel or LAN.
-
-#### AMD / NVIDIA / CPU: GGUF via llama.cpp (12–16 GB cards)
-
-On Linux (or any non-Apple machine), SUBCOR serves a GGUF through a `llama-server` it supervises itself, and trains Skill Units on a PyTorch trainer loaded from the **same** GGUF. Each trained unit is exported as a GGUF LoRA and hot-loaded:
+### 3. AMD, NVIDIA or CPU (GGUF via llama.cpp, PyTorch trainer)
 
 ```bash
-uv sync --python 3.13 --extra dev --extra rocm      # torch ROCm trainer + gguf
-uv run --extra rocm subcor serve --backend llamacpp \
-  --gguf /path/to/Qwen3.5-0.8B-Q4_K_M.gguf --tenant company-a
+uv sync --python 3.13 --extra dev --extra rocm
+uv run --extra rocm subcor serve --backend llamacpp --gguf /path/to/Qwen3.5-0.8B-Q4_K_M.gguf --tenant acme
 ```
 
-Without `--gguf`, `--llamacpp-url` connects to an external `llama-server` for inference only. Start that server with `--embeddings --pooling mean`, and map routed units to the adapters it loaded with `--lora-id-map unit=id,...`. See [docs/AMD-GGUF.md](docs/AMD-GGUF.md) for llama.cpp installation, flags, measured numbers (RX 6800: ~234 tok/s llama.cpp vs ~31 tok/s PyTorch decode), VRAM budgets and limitations.
+SUBCOR supervises its own `llama-server`. It trains units with PyTorch from the same GGUF,
+exports them as GGUF LoRA adapters and hot-loads them. Setup, flags, VRAM budgets and
+measured numbers are in [`docs/AMD-GGUF.md`](docs/AMD-GGUF.md).
 
-### 4. Standardized Longitudinal Functional Growth Benchmarks
+### 4. Serve several tenants from one base
 
 ```bash
-# Run built-in subcor-core-v1 against local MLX or any live OpenAI-compatible server
-uv run --extra mlx subcor bench run \
-  --endpoint http://127.0.0.1:8420/v1 \
-  --model subcor/company-a \
-  --label "day0-frozen-base" \
-  --ledger ~/.local/share/subcor/benchmarks/company-a.jsonl
-
-# Render Markdown Growth Report and JSON delta
-uv run subcor bench report \
-  --ledger ~/.local/share/subcor/benchmarks/company-a.jsonl \
-  --out ./company-a-growth.md
-
-uv run subcor bench compare \
-  --ledger ~/.local/share/subcor/benchmarks/company-a.jsonl
-
-# Export canonical suite JSON to inspect or create custom company suites
-uv run subcor bench export-suite --out ./subcor-core-v1.json
+uv run --extra mlx subcor serve --host 127.0.0.1 --port 8420 \
+  --state-dir ~/.local/share/subcor --tenant company-a --tenant company-b
 ```
 
-### 5. Recompiling Skill Units Across Base Kernel Upgrades
+The server speaks the OpenAI API (`/v1/chat/completions` with tools and streaming, and
+`/v1/models`) and the Ollama discovery endpoint (`/api/tags`), so existing clients can point
+straight at it. Each tenant gets its own units, trajectories and router. Binding to anything
+but loopback requires `--api-key` or `--auth-config`. Connecting agent platforms is covered
+in [`docs/CAPHEOS-INTEGRATION.md`](docs/CAPHEOS-INTEGRATION.md).
 
-Each compiled `payload.scun` is a binary tied to its `base_kernel_id` ("the impact drill"), while its companion `skill_spec.json` is portable workflow source code ("the drill bit blueprint"). Upgrading to a newer or larger base checkpoint recompiles your entire library automatically through the locked Conformance Gate:
+### 5. Track growth over time
 
 ```bash
-uv run --extra mlx subcor recompile \
-  --source-units ~/.local/share/subcor/tenants/company-a/units \
-  --dest-state ~/.local/share/subcor-v2 \
-  --tenant company-a \
-  --model mlx-community/Qwen3.5-2B-4bit
+uv run subcor bench run --endpoint http://127.0.0.1:8420/v1 --model subcor/company-a \
+  --label day0 --ledger ./company-a.jsonl
+uv run subcor bench report --ledger ./company-a.jsonl --out ./company-a-growth.md
+uv run subcor bench bfcl --help        # the BFCL v3 harness used for the results above
 ```
 
-Recompiled units land in `CONFORMANT` (never self-enabled) so an independent approver promotes them into production.
+## HTTP API
 
----
-
-## Multi-Tenant HTTP API Reference
-
-| Method & Path | Purpose |
+| Endpoint | What it does |
 |---|---|
-| `GET /healthz`, `GET /readyz` | Liveness/readiness, active model, per-tenant enabled units |
-| `GET /v1/models`, `GET /api/tags` | OpenAI & Ollama/StarNet model discovery (`subcor/base`, `subcor/<tenant>`) |
-| `POST /v1/chat/completions` | Full multi-turn chat, OpenAI `tools`/`tool_calls`, true token-by-token SSE streaming (`stream: true`), plus `X-SUBCOR-Routed-Units`, `X-SUBCOR-Escalate`, and `X-SUBCOR-Confidence` headers |
-| `POST /v1/subcor/tenants/{t}/trajectories` | Append verified or unverified Intern trajectories |
-| `POST /v1/subcor/tenants/{t}/study` | Run governed Study Cycle (`CONFORMANT`/`DORMANT`; saves `skill_spec.json`; never self-enables) |
-| `GET  /v1/subcor/tenants/{t}/units` | List tenant Skill Units with `base_kernel_id`, SHA-256, bits/weight, and conformance reports |
-| `POST /v1/subcor/tenants/{t}/units/{u}/promote` | Promote `CONFORMANT → ENABLED` (`approver != proposer`, else HTTP 403) |
-| `POST /v1/subcor/tenants/{t}/units/{u}/rollback` | Atomic live rollback `ENABLED → ROLLED_BACK` |
-| `POST /v1/subcor/tenants/{t}/units/{u}/export-capheos` | Export portable CaPheOS format-2 bundle (`module.json`, `weights.scun`, `router_gate.json`, `skill_spec.json`, `conformance/test.js`) |
+| `GET /healthz`, `GET /readyz` | Liveness and readiness, active model, enabled units per tenant |
+| `GET /v1/models`, `GET /api/tags` | Model discovery (`subcor/base`, `subcor/<tenant>`) |
+| `POST /v1/chat/completions` | Multi-turn chat, OpenAI `tools` and `tool_calls`, token SSE streaming, plus `X-SUBCOR-Routed-Units`, `X-SUBCOR-Escalate` and `X-SUBCOR-Confidence` headers |
+| `POST /v1/subcor/tenants/{t}/trajectories` | Append verified or unverified trajectories |
+| `POST /v1/subcor/tenants/{t}/study` | Run a governed study cycle (sync, or `async: true` with a job to poll). Never enables a unit. |
+| `GET /v1/subcor/tenants/{t}/units` | List units with base kernel, SHA-256, bits per weight and conformance report |
+| `POST /v1/subcor/tenants/{t}/units/{u}/promote` | `CONFORMANT → ENABLED`. Returns 403 if the approver is the proposer. |
+| `POST /v1/subcor/tenants/{t}/units/{u}/rollback` | Atomic `ENABLED → ROLLED_BACK` |
+| `POST /v1/subcor/tenants/{t}/units/{u}/export-capheos` | Export a portable bundle (`module.json`, `weights.scun`, `router_gate.json`, `skill_spec.json`, conformance test) |
 
----
+## What SUBCOR is not
 
-## Repository Map
+- **Not a way to cram facts into weights.** Facts belong in context, retrieval and tools.
+  Units hold *procedures*: routing, formatting, triage, policy checks.
+- **Not a replacement for a frontier model.** It's built for the repeatable middle of the
+  work, and it hands hard turns back.
+- **Not a proven self-improving system.** Units do get better from verified experience, but
+  we haven't yet shown gains compounding over many generations of units. See
+  [`docs/BACKGROUND.md`](docs/BACKGROUND.md) for limitations and what didn't work.
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Behavior contracts, invariants, ADRs and method details (the maths) |
+| [`docs/BACKGROUND.md`](docs/BACKGROUND.md) | Inspiration, prior art, what's new, negative results, limitations |
+| [`docs/BFCL-POC-REPORT.md`](docs/BFCL-POC-REPORT.md) | BFCL v3 results and ablations |
+| [`docs/BENCHMARK-REPORT.md`](docs/BENCHMARK-REPORT.md) | `subcor-core-v1` growth benchmark on Apple M5 |
+| [`docs/MULTITURN-MULTILAYER-REPORT.md`](docs/MULTITURN-MULTILAYER-REPORT.md) | Multi-turn masking and memory-safe multi-layer training on 16 GB |
+| [`docs/AMD-GGUF.md`](docs/AMD-GGUF.md) | llama.cpp serving and PyTorch training on 12–16 GB GPUs |
+| [`docs/CAPHEOS-INTEGRATION.md`](docs/CAPHEOS-INTEGRATION.md) | Serving multiple agent-platform instances |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones and exit gates |
+
+## Repository map
 
 ```text
 src/subcor/
-├── types.py               # Domain types, SkillSpec, lifecycle states, error hierarchy
-├── telemetry.py           # Append-only JSONL TrajectoryStore (Verified Evidence Gate)
-├── intern.py              # TextTrajectoryStore & n-gram repetition loop metrics
-├── sub1bit.py             # NanoQuant-style bit-packed binary low-rank factorization
-├── expansion.py           # Function-preserving ElasticLinear + FP32 & Binary STE
-├── surgeon.py             # Zero-gradient contrastive activation WeightSpaceSurgeon
-├── router.py              # Training-free frozen-base RouterGate & MoESkillRouter
-├── confidence.py          # Cortical Handoff (TurnConfidence) & OpenAI tool_calls parser
-├── units.py               # Governed SkillUnitRegistry, SHA-256, skill_spec, rollback, export
-├── recompile.py           # Portable Skill Unit recompiler across base-kernel upgrades
-├── server.py              # Multi-tenant OpenAI (multi-turn/tools/SSE) + Control Plane server
-├── benchmark.py           # Standardized subcor-core-v1 suite, ledger, diff, Markdown reports
-├── proving_ground.py      # Deterministic synthetic Micro-Intern proving ground
-├── live_loop.py           # Live Apple Silicon MLX Intern, MoE, and Surgery workflows
-├── cli.py                 # `subcor` CLI entrypoint (`serve`, `bench`, `recompile`, ...)
-├── gguf_export.py         # Skill Unit -> llama.cpp GGUF LoRA adapter exporter
+├── types.py            domain types, SkillSpec, lifecycle states, errors
+├── telemetry.py        append-only trajectory store (verified evidence gate)
+├── intern.py           text trajectory store, n-gram loop metrics
+├── expansion.py        function-preserving low-rank expansion, FP32 and binary STE
+├── surgeon.py          zero-gradient contrastive weight-space surgery
+├── sub1bit.py          bit-packed binary low-rank factorization
+├── router.py           training-free frozen-base gates and top-k router
+├── confidence.py       turn confidence, escalation, tool-call parsing
+├── units.py            governed unit registry: SHA-256, conformance, approval, rollback, export
+├── auth.py             role- and tenant-scoped principals for the HTTP server
+├── server.py           multi-tenant OpenAI-compatible server and governance endpoints
+├── recompile.py        recompile units onto a new base model
+├── benchmark.py        subcor-core-v1 suite, ledger, diffs, reports
+├── baselines.py        controlled comparisons (sub-1-bit vs FP16 LoRA, BitDelta, few-shot)
+├── bfcl.py             BFCL v3 loader, grader and training harness
+├── gguf_export.py      Skill Unit → llama.cpp GGUF LoRA adapter
+├── proving_ground.py   the synthetic `subcor demo`
+├── live_loop.py        live MLX intern, MoE and surgery workflows
+├── cli.py              the `subcor` command
 └── backends/
-    ├── mlx_kernel.py      # Frozen Apple Silicon MLX kernel, stream_generate, SubcorMLXLinear
-    ├── torch_kernel.py    # PyTorch (ROCm/CUDA/CPU) trainer/kernel, loads GGUF via transformers
-    ├── llamacpp_kernel.py # llama-server ServingKernel (chat/tools/SSE, LoRA routing, training)
-    └── llamacpp_supervisor.py # Owns the llama-server subprocess (restart with LoRA adapters)
-
-tests/                     # 31 automated unit & HTTP integration tests
-docs/
-├── PAPER.md               # Methodology draft paper (v0.1)
-├── ARCHITECTURE.md        # Intended behavior contracts, invariants, and ADRs 001–006
-├── BENCHMARK-REPORT.md    # Live verified 3-snapshot growth report on Qwen3.5-0.8B-4bit
-├── CAPHEOS-INTEGRATION.md # Multi-instance CaPheOS deployment & governance runbook
-├── AMD-GGUF.md            # GGUF serving via llama.cpp + PyTorch training on 12–16 GB cards
-└── ROADMAP.md             # Milestone exit gates and next steps
+    ├── mlx_kernel.py           Apple Silicon kernel (frozen base, adapters, streaming)
+    ├── torch_kernel.py         PyTorch ROCm/CUDA/CPU kernel and trainer (QLoRA, multi-turn masking)
+    ├── llamacpp_kernel.py      llama-server backend (chat, tools, SSE, LoRA routing)
+    └── llamacpp_supervisor.py  owns and restarts the llama-server process
+tests/                  unit, property and HTTP integration tests (CPU, no model downloads)
+docs/                   see the table above
 ```
 
----
+## Contributing and security
 
-## Licensing
+Contributions are welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) covers setup, the checks to
+run and the invariants a change must keep. Please report vulnerabilities privately, as
+described in [`SECURITY.md`](SECURITY.md).
 
-- **Core Runtime:** `AGPL-3.0-or-later`. The full text is in [`LICENSE`](LICENSE).
-- **Exported Skill Units:** Default `Apache-2.0` (compatible with Apache-2.0 base checkpoints such as Gemma 4 / Qwen 3.5 and CaPheOS unit licensing)
-- **Model weights are not part of SUBCOR.** Base checkpoints (GGUF, MLX or Hugging Face) are downloaded separately and keep their own licenses, which every deployment must follow. A Skill Unit is trained against a specific base, so check that the base's terms allow the unit's license before distributing it.
-- **Third-party software** keeps its own license: NumPy and the optional extras (MLX, PyTorch, Transformers, `gguf`, ...) are installed as dependencies, and `llama-server` (llama.cpp) runs as a separate, user-installed binary. None of them is vendored in this repository.
+## License
+
+- **The runtime is [AGPL-3.0-or-later](LICENSE).**
+- **Exported Skill Units default to Apache-2.0**, which fits Apache-2.0 base checkpoints such
+  as Gemma 4 and Qwen 3.5.
+- **Model weights are not part of SUBCOR.** Base checkpoints (GGUF, MLX or Hugging Face) are
+  downloaded separately and keep their own licenses, which every deployment must follow. A
+  Skill Unit is trained against a specific base, so check that the base's terms allow the
+  unit's license before distributing it.
+- **Third-party software keeps its own license.** NumPy and the optional extras (MLX,
+  PyTorch, Transformers, `gguf`, ...) are installed as dependencies, and `llama-server`
+  (llama.cpp) runs as a separate binary you install yourself. None of them is vendored in
+  this repository.
