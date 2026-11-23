@@ -139,7 +139,8 @@ uv sync --python 3.13 --extra dev --extra rocm
 uv run --extra rocm subcor serve --backend llamacpp --gguf /path/to/Qwen3.5-0.8B-Q4_K_M.gguf --tenant acme
 ```
 
-SUBCOR supervises its own `llama-server`. It trains units with PyTorch from the same GGUF,
+SUBCOR supervises its own `llama-server`. With `--sticky-routing` it keeps a conversation's units
+unless a switch clearly wins, because every unit switch makes llama-server re-read the prompt. It trains units with PyTorch from the same GGUF,
 exports them as GGUF LoRA adapters and hot-loads them. Setup, flags, VRAM budgets and
 measured numbers are in [`docs/AMD-GGUF.md`](docs/AMD-GGUF.md).
 
@@ -201,6 +202,8 @@ uv run subcor bench bfcl --help        # the BFCL v3 harness used for the result
 | [`docs/AMD-GGUF.md`](docs/AMD-GGUF.md) | llama.cpp serving and PyTorch training on 12–16 GB GPUs |
 | [`docs/CAPHEOS-INTEGRATION.md`](docs/CAPHEOS-INTEGRATION.md) | Serving multiple agent-platform instances |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones and exit gates |
+| [`docs/ALORA-NOTE.md`](docs/ALORA-NOTE.md) | Research note: llama.cpp prompt-cache cost of unit switches, and activated LoRAs |
+| [`experiments/`](experiments/README.md) | Preregistered BFCL v4 study, and Skill Units trained on real coding-agent sessions |
 
 ## Repository map
 
@@ -232,6 +235,7 @@ src/subcor/
     └── llamacpp_supervisor.py  owns and restarts the llama-server process
 tests/                  unit, property and HTTP integration tests (CPU, no model downloads)
 docs/                   see the table above
+experiments/            research code: BFCL v4 study, chat-history units, serving measurements
 ```
 
 ## Contributing and security
