@@ -36,7 +36,7 @@ item subsetting, and a scorer and paired export that report on bfcl's score file
 ## Setup (separate eval venv, never the project env)
 
 ```bash
-S=/tmp/claude-1000/-home-caullen-Documents-Dev-GitHub-subcor/301b3745-882c-4027-b232-a6492d126d24/scratchpad/bfcl/harness
+S=<scratchpad>/bfcl/harness
 uv venv --python 3.11 $S/venv
 # CPU torch wheel: bfcl pulls sentence-transformers. Without the CPU index, uv downloads several GB of CUDA wheels.
 uv pip install --python $S/venv/bin/python \

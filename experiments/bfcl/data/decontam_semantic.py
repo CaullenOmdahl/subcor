@@ -47,7 +47,9 @@ MIN_DESC_WORDS = 6
 
 
 def _fn(t: dict[str, Any]) -> dict[str, Any]:
-    return t["function"] if t.get("type") == "function" and isinstance(t.get("function"), dict) else t
+    return (
+        t["function"] if t.get("type") == "function" and isinstance(t.get("function"), dict) else t
+    )
 
 
 def _desc(fn: dict[str, Any]) -> str:
@@ -121,18 +123,36 @@ def main() -> int:
                 if long_enough and d in b_desc_exact:
                     fired.add("desc_exact")
                     if len(examples) < 25:
-                        examples.append({"split": split, "id": r["id"], "rule": "desc_exact",
-                                         "train_fn": fn.get("name"), "bfcl_fn": b_desc_exact[d]})
+                        examples.append(
+                            {
+                                "split": split,
+                                "id": r["id"],
+                                "rule": "desc_exact",
+                                "train_fn": fn.get("name"),
+                                "bfcl_fn": b_desc_exact[d],
+                            }
+                        )
                 jac, bi = mh.max_jaccard(d) if long_enough else (0.0, -1)
                 if jac > 0.7:
                     fired.add("desc_minhash")
                     if len(examples) < 25 and "desc_exact" not in fired:
-                        examples.append({"split": split, "id": r["id"], "rule": "desc_minhash",
-                                         "train_fn": fn.get("name"), "bfcl_fn": b_names[bi], "jaccard": round(jac, 3)})
+                        examples.append(
+                            {
+                                "split": split,
+                                "id": r["id"],
+                                "rule": "desc_minhash",
+                                "train_fn": fn.get("name"),
+                                "bfcl_fn": b_names[bi],
+                                "jaccard": round(jac, 3),
+                            }
+                        )
                 pk = _props(fn)
                 if pk.count(",") >= 1 and pk in b_props and long_enough:
                     sh = mh.shingles(d)
-                    best = max((len(sh & mh.sets[j]) / max(1, len(sh | mh.sets[j])) for j in b_props[pk]), default=0.0)
+                    best = max(
+                        (len(sh & mh.sets[j]) / max(1, len(sh | mh.sets[j])) for j in b_props[pk]),
+                        default=0.0,
+                    )
                     if best > 0.5:
                         fired.add("props_desc")
             for u in user_texts(r["messages"]):
@@ -147,14 +167,20 @@ def main() -> int:
                 drop[r["id"]] = sorted(func_rules)[0]
             if fired:
                 hits["any"] += 1
-        report[split] = {"rows": len(rows), "rows_hit_by_rule": dict(rows_hit),
-                         "rows_hit_by_function_rule": sum(1 for r in rows if r["id"] in drop)}
+        report[split] = {
+            "rows": len(rows),
+            "rows_hit_by_rule": dict(rows_hit),
+            "rows_hit_by_function_rule": sum(1 for r in rows if r["id"] in drop),
+        }
 
     for name in ("router_pos.jsonl", "router_pos_dev.jsonl"):
         p = args.data / name
         if p.exists():
             rows = read_jsonl(p)
-            report[name] = {"rows": len(rows), "from_rows_hit_by_function_rule": sum(1 for r in rows if r.get("row_id") in drop)}
+            report[name] = {
+                "rows": len(rows),
+                "from_rows_hit_by_function_rule": sum(1 for r in rows if r.get("row_id") in drop),
+            }
     if args.a1 is not None and args.a1.exists():
         a1 = json.loads(args.a1.read_text(encoding="utf-8"))
         report["a1_exemplars_hit"] = [e["id"] for e in a1["exemplars"] if e["id"] in drop]

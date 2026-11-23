@@ -50,10 +50,20 @@ def main() -> int:
             tgt += sum(s.num_target_tokens for s in seqs)
             over += m > args.max_tokens
         lens.sort()
-        q = lambda f: lens[min(len(lens) - 1, int(f * len(lens)))] if lens else 0  # noqa: E731
-        out[name] = {"rows_ok": len(lens), "errors": dict(errs), "sequences": nseq, "target_tokens": tgt,
-                     "max_seq_tokens": {"p50": q(0.5), "p90": q(0.9), "p99": q(0.99), "max": lens[-1] if lens else 0},
-                     f"rows_over_{args.max_tokens}": over}
+        q = lambda f, lens=lens: lens[min(len(lens) - 1, int(f * len(lens)))] if lens else 0  # noqa: E731
+        out[name] = {
+            "rows_ok": len(lens),
+            "errors": dict(errs),
+            "sequences": nseq,
+            "target_tokens": tgt,
+            "max_seq_tokens": {
+                "p50": q(0.5),
+                "p90": q(0.9),
+                "p99": q(0.99),
+                "max": lens[-1] if lens else 0,
+            },
+            f"rows_over_{args.max_tokens}": over,
+        }
         bad += sum(errs.values())
     print(json.dumps(out, indent=1))
     return 1 if bad else 0

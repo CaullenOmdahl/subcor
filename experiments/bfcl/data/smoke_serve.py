@@ -43,10 +43,18 @@ def main() -> None:
     for r in pick:
         k = next(i for i, m in enumerate(r["messages"]) if m["role"] == "assistant")
         gold = r["messages"][k]
-        body = {"messages": r["messages"][:k], "tools": r["tools"], "temperature": 0,
-                "max_tokens": args.max_tokens, "chat_template_kwargs": {"enable_thinking": False}}
-        req = urllib.request.Request(args.url + "/v1/chat/completions", data=json.dumps(body).encode(),
-                                     headers={"Content-Type": "application/json"})
+        body = {
+            "messages": r["messages"][:k],
+            "tools": r["tools"],
+            "temperature": 0,
+            "max_tokens": args.max_tokens,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        req = urllib.request.Request(
+            args.url + "/v1/chat/completions",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+        )
         s = stats[r["category"]]
         s["n"] += 1
         try:
@@ -60,6 +68,7 @@ def main() -> None:
         msg = out["choices"][0]["message"]
         got = [c["function"]["name"] for c in msg.get("tool_calls") or []]
         want = [c["function"]["name"] for c in gold.get("tool_calls") or []]
+
         def _obj(a: str) -> bool:
             try:
                 return isinstance(json.loads(a), dict)
@@ -74,8 +83,16 @@ def main() -> None:
     tot = Counter()
     for s in stats.values():
         tot.update(s)
-    print(json.dumps({"per_category": {c: dict(v) for c, v in sorted(stats.items())}, "total": dict(tot),
-                      "seconds": round(time.time() - t0, 1)}, indent=1))
+    print(
+        json.dumps(
+            {
+                "per_category": {c: dict(v) for c, v in sorted(stats.items())},
+                "total": dict(tot),
+                "seconds": round(time.time() - t0, 1),
+            },
+            indent=1,
+        )
+    )
 
 
 if __name__ == "__main__":

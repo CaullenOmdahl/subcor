@@ -1,5 +1,5 @@
 {
-  "run_dir": "/tmp/claude-1000/-home-caullen-Documents-Dev-GitHub-subcor/301b3745-882c-4027-b232-a6492d126d24/scratchpad/bfcl/harness/runs/smoke-0.8b-native",
+  "run_dir": "<scratchpad>/bfcl/harness/runs/smoke-0.8b-native",
   "registry": "harness/smoke-0.8b-native-FC",
   "handler": "native",
   "endpoint": {

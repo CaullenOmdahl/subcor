@@ -54,14 +54,20 @@ class ChatConfig:
 
 
 def add_endpoint_args(ap: Any) -> None:
-    ap.add_argument("--base-url", default="http://127.0.0.1:8502/v1", help="OpenAI base URL (.../v1)")
-    ap.add_argument("--model", default="local", help="model field ('subcor/<tenant>', 'subcor/base', ...)")
+    ap.add_argument(
+        "--base-url", default="http://127.0.0.1:8502/v1", help="OpenAI base URL (.../v1)"
+    )
+    ap.add_argument(
+        "--model", default="local", help="model field ('subcor/<tenant>', 'subcor/base', ...)"
+    )
     ap.add_argument("--api-key", default=os.environ.get("EVAL_API_KEY"))
     ap.add_argument("--concurrency", type=int, default=1)
     ap.add_argument("--timeout", type=float, default=900.0)
     ap.add_argument("--limit", type=int, default=None, help="first N items only (smoke tests)")
     ap.add_argument("--out", type=Path, required=True, help="per-item JSONL (resumable)")
-    ap.add_argument("--summary", type=Path, default=None, help="summary JSON (default: <out>.summary.json)")
+    ap.add_argument(
+        "--summary", type=Path, default=None, help="summary JSON (default: <out>.summary.json)"
+    )
     ap.add_argument("--run-label", default=None, help="free-form arm label stored in every row")
     ap.add_argument(
         "--extra-body",

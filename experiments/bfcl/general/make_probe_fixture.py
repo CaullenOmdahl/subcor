@@ -65,7 +65,9 @@ BUILTIN_NEGATIVES = [
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--llamacpp-url", default="http://127.0.0.1:8502")
     ap.add_argument("--model-id", default="fixture")
     ap.add_argument("--state-dir", type=Path, required=True)
@@ -85,9 +87,13 @@ def main() -> int:
         unit_id=args.unit_id, tap_layer=kernel.tap_layer, pos_embeddings=pos, neg_embeddings=neg
     )
 
-    reg = SkillUnitRegistry(args.state_dir.expanduser().resolve() / "tenants" / args.tenant / "units")
+    reg = SkillUnitRegistry(
+        args.state_dir.expanduser().resolve() / "tenants" / args.tenant / "units"
+    )
     if (reg.root / args.unit_id).exists():
-        raise SystemExit(f"unit {args.unit_id} already exists under {reg.root}; use a fresh --state-dir")
+        raise SystemExit(
+            f"unit {args.unit_id} already exists under {reg.root}; use a fresh --state-dir"
+        )
     reg.propose(
         unit_id=args.unit_id,
         version="0.0.1",
@@ -100,7 +106,11 @@ def main() -> int:
     )
     reg.save_router_gate(gate)
     reg.record_conformance(
-        args.unit_id, baseline_before=1.0, baseline_after=1.0, target_before=0.0, target_after=1.0,
+        args.unit_id,
+        baseline_before=1.0,
+        baseline_after=1.0,
+        target_before=0.0,
+        target_after=1.0,
         evaluator="fixture-not-a-real-gate",
     )
     reg.promote(args.unit_id, approver="general-eval-fixture-approver")

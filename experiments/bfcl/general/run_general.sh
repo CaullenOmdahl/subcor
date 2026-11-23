@@ -25,7 +25,7 @@ set -euo pipefail
 
 ARM=${1:?arm label}; BASE_URL=${2:?base_url}; MODEL=${3:?model}; LIMIT=${4:-}
 HERE=$(cd "$(dirname "$0")" && pwd)
-SCRATCH=${SCRATCH:-/tmp/claude-1000/-home-caullen-Documents-Dev-GitHub-subcor/301b3745-882c-4027-b232-a6492d126d24/scratchpad/bfcl}
+SCRATCH=${SCRATCH:-./.scratch/bfcl}
 VENV=${VENV:-$SCRATCH/venv}
 DATA=${DATA:-$SCRATCH/general/data}
 OUT=${OUT:-$SCRATCH/general/results/$ARM}

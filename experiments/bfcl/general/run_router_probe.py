@@ -45,7 +45,12 @@ def wilson(k: int, n: int, z: float = 1.959964) -> tuple[float, float]:
 def rate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     k = sum(1 for r in rows if r["selected_units"])
     lo, hi = wilson(k, len(rows))
-    return {"n": len(rows), "activated": k, "rate": k / len(rows) if rows else float("nan"), "wilson95": [lo, hi]}
+    return {
+        "n": len(rows),
+        "activated": k,
+        "rate": k / len(rows) if rows else float("nan"),
+        "wilson95": [lo, hi],
+    }
 
 
 def quantiles(xs: list[float]) -> dict[str, float]:
@@ -60,7 +65,9 @@ def quantiles(xs: list[float]) -> dict[str, float]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     common.add_endpoint_args(ap)
     ap.add_argument("--prompts", type=Path, required=True, help="jsonl with id, prompt, category")
     ap.add_argument("--max-tokens", type=int, default=1)
@@ -80,7 +87,9 @@ def main() -> int:
     fp = common.fingerprint_of("router_probe", cfg.describe(), args.max_tokens, args.run_label)
 
     def worker(it: dict[str, Any]) -> dict[str, Any]:
-        rec = common.chat(cfg, [{"role": "user", "content": it["prompt"]}], max_tokens=args.max_tokens)
+        rec = common.chat(
+            cfg, [{"role": "user", "content": it["prompt"]}], max_tokens=args.max_tokens
+        )
         row: dict[str, Any] = {
             "id": it["id"],
             "task": "router_probe",
@@ -95,7 +104,9 @@ def main() -> int:
             return row
         sub = rec["subcor"] if isinstance(rec["subcor"], dict) else None
         if sub is None:
-            row.update({"ok": False, "error": "response has no 'subcor' field (not a SUBCOR endpoint?)"})
+            row.update(
+                {"ok": False, "error": "response has no 'subcor' field (not a SUBCOR endpoint?)"}
+            )
             return row
         row.update(
             {
@@ -109,11 +120,19 @@ def main() -> int:
         )
         return row
 
-    print(f"router probe: {len(items)} prompts -> {args.out} ({cfg.base_url}, model={cfg.model})", file=sys.stderr)
-    rows = common.run_items(items, worker, out_path=args.out, concurrency=args.concurrency, fingerprint=fp)
+    print(
+        f"router probe: {len(items)} prompts -> {args.out} ({cfg.base_url}, model={cfg.model})",
+        file=sys.stderr,
+    )
+    rows = common.run_items(
+        items, worker, out_path=args.out, concurrency=args.concurrency, fingerprint=fp
+    )
     ok = [r for r in rows if r.get("ok")]
     cats = sorted({r["category"] for r in ok})
-    units = sorted({u for r in ok for u in (r.get("scores") or {})} | {u for r in ok for u in r["selected_units"]})
+    units = sorted(
+        {u for r in ok for u in (r.get("scores") or {})}
+        | {u for r in ok for u in r["selected_units"]}
+    )
     tenants = sorted({str(r.get("tenant")) for r in ok})
     summary = {
         "task": "router_probe",
@@ -128,8 +147,12 @@ def main() -> int:
         "per_category": {c: rate([r for r in ok if r["category"] == c]) for c in cats},
         "per_unit": {
             u: {
-                **rate([{"selected_units": [x for x in r["selected_units"] if x == u]} for r in ok]),
-                "score_quantiles": quantiles([float(r["scores"][u]) for r in ok if u in (r.get("scores") or {})]),
+                **rate(
+                    [{"selected_units": [x for x in r["selected_units"] if x == u]} for r in ok]
+                ),
+                "score_quantiles": quantiles(
+                    [float(r["scores"][u]) for r in ok if u in (r.get("scores") or {})]
+                ),
             }
             for u in units
         },
@@ -144,9 +167,15 @@ def main() -> int:
                     [float(r["scores"][u]) - thr for r in ok if u in (r.get("scores") or {})]
                 )
     if not units:
-        summary["warning"] = "no unit scores in any response: tenant has no ENABLED units, so 0% is trivial"
+        summary["warning"] = (
+            "no unit scores in any response: tenant has no ENABLED units, so 0% is trivial"
+        )
     common.write_summary(common.default_summary_path(args.out, args.summary), summary)
-    print(json.dumps({k: v for k, v in summary.items() if k not in ("endpoint", "per_unit")}, indent=2))
+    print(
+        json.dumps(
+            {k: v for k, v in summary.items() if k not in ("endpoint", "per_unit")}, indent=2
+        )
+    )
     return 0 if not summary["n_failed_requests"] else 1
 
 

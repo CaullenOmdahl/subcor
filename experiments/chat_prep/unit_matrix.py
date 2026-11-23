@@ -34,10 +34,17 @@ def main() -> None:
     cfg = AutoConfig.from_pretrained(model)
     total = int(getattr(cfg, "text_config", cfg).num_hidden_layers)
     spec = os.environ.get("SUBCOR_LAYERS", "last8")
-    idx = list(range(total - int(spec[4:]), total)) if spec.startswith("last") else [int(x) for x in spec.split(",")]
-    k = TorchKernel(model, target_layer_indices=idx,
-                    target_projections=tuple(os.environ.get("SUBCOR_PROJ", "mlp.down_proj").split(",")),
-                    quantize_base_weights=os.environ.get("SUBCOR_Q4") == "1")
+    idx = (
+        list(range(total - int(spec[4:]), total))
+        if spec.startswith("last")
+        else [int(x) for x in spec.split(",")]
+    )
+    k = TorchKernel(
+        model,
+        target_layer_indices=idx,
+        target_projections=tuple(os.environ.get("SUBCOR_PROJ", "mlp.down_proj").split(",")),
+        quantize_base_weights=os.environ.get("SUBCOR_Q4") == "1",
+    )
     names = sorted(k.instrumented)
     sets = {}
     for c in CAPS:
@@ -56,14 +63,28 @@ def main() -> None:
     print("base", table["base"], flush=True)
     for uname, path in units.items():
         z = np.load(path)
-        ad = {nm: LowRankAdapter(name=f"trained:{nm}", a=z[f"{nm}.a"], b=z[f"{nm}.b"]) for nm in names}
+        ad = {
+            nm: LowRankAdapter(name=f"trained:{nm}", a=z[f"{nm}.a"], b=z[f"{nm}.b"]) for nm in names
+        }
         mount(k, ad)
         table[uname] = score()
         unmount(k, ad)
         print(uname, table[uname], flush=True)
-    gains = {u: {c: round(table["base"][c] - v, 4) for c, v in row.items()} for u, row in table.items() if u != "base"}
-    out.write_text(json.dumps({"nll": table, "gain_vs_base": gains, "n_per_capability": {c: len(v) for c, v in sets.items()}},
-                              indent=1))
+    gains = {
+        u: {c: round(table["base"][c] - v, 4) for c, v in row.items()}
+        for u, row in table.items()
+        if u != "base"
+    }
+    out.write_text(
+        json.dumps(
+            {
+                "nll": table,
+                "gain_vs_base": gains,
+                "n_per_capability": {c: len(v) for c, v in sets.items()},
+            },
+            indent=1,
+        )
+    )
     print("gains", json.dumps(gains), flush=True)
 
 

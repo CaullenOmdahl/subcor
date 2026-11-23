@@ -42,14 +42,31 @@ NEG_MIX = {  # dolly category -> count ; "gsm8k_train" -> count
     "gsm8k_train": 60,
 }
 POS_N = 300
-CALL_CATS = ("single", "multiple", "parallel", "parallel_multiple", "multi_step", "multi_turn", "multi_turn_clarify")
+CALL_CATS = (
+    "single",
+    "multiple",
+    "parallel",
+    "parallel_multiple",
+    "multi_step",
+    "multi_turn",
+    "multi_turn_clarify",
+)
 
 
 def load_eval_prompts(raw: Path) -> list[str]:
     import pyarrow.parquet as pq  # noqa: PLC0415
 
-    out = [json.loads(line)["prompt"] for line in (raw / "ifeval/ifeval_input_data.jsonl").read_text().splitlines() if line.strip()]
-    out += [str(q) for q in pq.read_table(raw / "gsm8k/main/test-00000-of-00001.parquet").column("question").to_pylist()]
+    out = [
+        json.loads(line)["prompt"]
+        for line in (raw / "ifeval/ifeval_input_data.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    out += [
+        str(q)
+        for q in pq.read_table(raw / "gsm8k/main/test-00000-of-00001.parquet")
+        .column("question")
+        .to_pylist()
+    ]
     return out
 
 
@@ -87,8 +104,15 @@ def pick_pos(rows: list[dict[str, Any]], n: int, rng: random.Random) -> list[dic
             if k in seen:
                 continue
             seen.add(k)
-            out.append({"prompt": p, "category": r["category"], "source": r["source"], "row_id": r["id"],
-                        "tool_names": [t["function"]["name"] for t in r["tools"]]})
+            out.append(
+                {
+                    "prompt": p,
+                    "category": r["category"],
+                    "source": r["source"],
+                    "row_id": r["id"],
+                    "tool_names": [t["function"]["name"] for t in r["tools"]],
+                }
+            )
     return out
 
 
@@ -135,7 +159,11 @@ def main() -> None:
             continue  # keep the no-context prompts for the other categories
         if 15 <= len(text) <= 2500:
             cands[cat].append((text, "databricks/databricks-dolly-15k"))
-    for q in pq.read_table(args.raw / "gsm8k/main/train-00000-of-00001.parquet").column("question").to_pylist():
+    for q in (
+        pq.read_table(args.raw / "gsm8k/main/train-00000-of-00001.parquet")
+        .column("question")
+        .to_pylist()
+    ):
         cands["gsm8k_train"].append((str(q), "openai/gsm8k (train split)"))
 
     drops: Counter = Counter()
@@ -159,7 +187,9 @@ def main() -> None:
                 drops["minhash_vs_ifeval_gsm8ktest_bfcl"] += 1
                 continue
             seen.add(k)
-            neg.append({"prompt": text, "category": "math" if cat == "gsm8k_train" else cat, "source": src})
+            neg.append(
+                {"prompt": text, "category": "math" if cat == "gsm8k_train" else cat, "source": src}
+            )
             took += 1
 
     def write(name: str, rows: list[dict[str, Any]]) -> None:
@@ -167,17 +197,27 @@ def main() -> None:
         cut = int(round(0.8 * len(rows)))
         with (args.data / name).open("w", encoding="utf-8") as fh:
             for i, r in enumerate(rows):
-                fh.write(json.dumps({**r, "split": "fit" if i < cut else "heldout"}, ensure_ascii=False) + "\n")
+                fh.write(
+                    json.dumps({**r, "split": "fit" if i < cut else "heldout"}, ensure_ascii=False)
+                    + "\n"
+                )
 
     write("router_pos.jsonl", pos)
     write("router_pos_dev.jsonl", pos_dev)
     write("router_neg.jsonl", neg)
     stats = {
         "pos": {"n": len(pos), "by_category": dict(Counter(p["category"] for p in pos))},
-        "pos_dev": {"n": len(pos_dev), "by_category": dict(Counter(p["category"] for p in pos_dev))},
-        "neg": {"n": len(neg), "by_category": dict(Counter(p["category"] for p in neg)),
-                "licences": {"databricks/databricks-dolly-15k": "cc-by-sa-3.0", "openai/gsm8k": "mit"},
-                "decontam_drops": dict(drops), "checked_against": "google/IFEval (541), GSM8K test (1319), BFCL v4 prompts"},
+        "pos_dev": {
+            "n": len(pos_dev),
+            "by_category": dict(Counter(p["category"] for p in pos_dev)),
+        },
+        "neg": {
+            "n": len(neg),
+            "by_category": dict(Counter(p["category"] for p in neg)),
+            "licences": {"databricks/databricks-dolly-15k": "cc-by-sa-3.0", "openai/gsm8k": "mit"},
+            "decontam_drops": dict(drops),
+            "checked_against": "google/IFEval (541), GSM8K test (1319), BFCL v4 prompts",
+        },
     }
     (args.data / "router_stats.json").write_text(json.dumps(stats, indent=2))
     print(json.dumps(stats, indent=1))

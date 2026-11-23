@@ -23,7 +23,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--hf-home", type=Path, default=None)
-    ap.add_argument("--exclude", type=Path, action="append", default=[], help="passed to build_probe_set.py")
+    ap.add_argument(
+        "--exclude", type=Path, action="append", default=[], help="passed to build_probe_set.py"
+    )
     args = ap.parse_args()
     out = args.out_dir
     out.mkdir(parents=True, exist_ok=True)
@@ -32,11 +34,26 @@ def main() -> int:
     import datasets
 
     datasets.load_dataset("google/IFEval", split="train").to_json(str(out / "ifeval.jsonl"))
-    datasets.load_dataset("openai/gsm8k", "main", split="test").to_json(str(out / "gsm8k_test.jsonl"))
-    datasets.load_dataset("openai/gsm8k", "main", split="train").to_json(str(out / "gsm8k_train.jsonl"))
-    datasets.load_dataset("databricks/databricks-dolly-15k", split="train").to_json(str(out / "dolly15k.jsonl"))
-    cmd = [sys.executable, "-I", str(HERE / "build_probe_set.py"), "--dolly", str(out / "dolly15k.jsonl"),
-           "--gsm8k-train", str(out / "gsm8k_train.jsonl"), "--out", str(out / "router_probe_prompts.jsonl")]
+    datasets.load_dataset("openai/gsm8k", "main", split="test").to_json(
+        str(out / "gsm8k_test.jsonl")
+    )
+    datasets.load_dataset("openai/gsm8k", "main", split="train").to_json(
+        str(out / "gsm8k_train.jsonl")
+    )
+    datasets.load_dataset("databricks/databricks-dolly-15k", split="train").to_json(
+        str(out / "dolly15k.jsonl")
+    )
+    cmd = [
+        sys.executable,
+        "-I",
+        str(HERE / "build_probe_set.py"),
+        "--dolly",
+        str(out / "dolly15k.jsonl"),
+        "--gsm8k-train",
+        str(out / "gsm8k_train.jsonl"),
+        "--out",
+        str(out / "router_probe_prompts.jsonl"),
+    ]
     for e in args.exclude:
         cmd += ["--exclude", str(e)]
     subprocess.run(cmd, check=True, cwd=out)

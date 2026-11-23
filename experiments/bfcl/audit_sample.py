@@ -17,10 +17,22 @@ import random
 from pathlib import Path
 
 SECTIONS = {
-    "non_live": {"simple_python", "simple_java", "simple_javascript", "multiple", "parallel", "parallel_multiple"},
+    "non_live": {
+        "simple_python",
+        "simple_java",
+        "simple_javascript",
+        "multiple",
+        "parallel",
+        "parallel_multiple",
+    },
     "live": {"live_simple", "live_multiple", "live_parallel", "live_parallel_multiple"},
     "irrelevance": {"irrelevance", "live_irrelevance"},
-    "multi_turn": {"multi_turn_base", "multi_turn_miss_func", "multi_turn_miss_param", "multi_turn_long_context"},
+    "multi_turn": {
+        "multi_turn_base",
+        "multi_turn_miss_func",
+        "multi_turn_miss_param",
+        "multi_turn_long_context",
+    },
 }
 
 
@@ -38,7 +50,9 @@ def main() -> int:
     per = args.n // len(SECTIONS)
     picked = []
     for sec, cats in SECTIONS.items():
-        pool = sorted((r for r in fails if r["category"] in cats), key=lambda r: (r["category"], r["id"]))
+        pool = sorted(
+            (r for r in fails if r["category"] in cats), key=lambda r: (r["category"], r["id"])
+        )
         rng.shuffle(pool)
         picked += [(sec, r) for r in pool[:per]]
 
@@ -74,9 +88,13 @@ def main() -> int:
                 "error": s.get("error"),
                 "question_head": json.dumps(q)[:600] if q is not None else None,
                 "functions": [fn.get("name") for fn in prompt.get("function", [])][:20],
-                "model_result_raw": (json.dumps(s.get("model_result_raw", res.get("result")))[:1500]),
+                "model_result_raw": (
+                    json.dumps(s.get("model_result_raw", res.get("result")))[:1500]
+                ),
                 "possible_answer": json.dumps(s.get("possible_answer"))[:800],
-                "finish_reasons": [t.get("finish_reason") for t in res.get("harness_trace", [])][:30],
+                "finish_reasons": [t.get("finish_reason") for t in res.get("harness_trace", [])][
+                    :30
+                ],
                 "classification": None,
                 "note": None,
             }

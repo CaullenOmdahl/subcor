@@ -31,41 +31,88 @@ MAX_PROMPT_TOKENS = 1000
 PROJECT_CAP = 0.20
 EVAL_FRAC = 0.20
 
-SYSTEM = ("You are a careful, concise software and operations agent working in a Linux shell. "
-          "Inspect before changing things, make minimal edits, and verify results before reporting.")
+SYSTEM = (
+    "You are a careful, concise software and operations agent working in a Linux shell. "
+    "Inspect before changing things, make minimal edits, and verify results before reporting."
+)
 
 TOOL_SCHEMAS = {
-    "run_command": ("Run a shell command and return its output.", {"command": "string"}, ["command"]),
-    "read_file": ("Read a file, optionally a line range.", {"path": "string", "offset": "integer", "limit": "integer"}, ["path"]),
-    "edit_file": ("Replace exact text in a file.", {"path": "string", "old_text": "string", "new_text": "string"}, ["path", "old_text", "new_text"]),
-    "write_file": ("Create or overwrite a file.", {"path": "string", "content": "string"}, ["path", "content"]),
+    "run_command": (
+        "Run a shell command and return its output.",
+        {"command": "string"},
+        ["command"],
+    ),
+    "read_file": (
+        "Read a file, optionally a line range.",
+        {"path": "string", "offset": "integer", "limit": "integer"},
+        ["path"],
+    ),
+    "edit_file": (
+        "Replace exact text in a file.",
+        {"path": "string", "old_text": "string", "new_text": "string"},
+        ["path", "old_text", "new_text"],
+    ),
+    "write_file": (
+        "Create or overwrite a file.",
+        {"path": "string", "content": "string"},
+        ["path", "content"],
+    ),
     "apply_patch": ("Apply a patch in *** Begin Patch format.", {"patch": "string"}, ["patch"]),
-    "search_files": ("Search file names or contents for a pattern.", {"pattern": "string", "path": "string"}, ["pattern"]),
+    "search_files": (
+        "Search file names or contents for a pattern.",
+        {"pattern": "string", "path": "string"},
+        ["pattern"],
+    ),
     "web_search": ("Search the web.", {"query": "string"}, ["query"]),
     "web_fetch": ("Fetch a web page.", {"url": "string"}, ["url"]),
     "ask_user": ("Ask the user a clarifying question.", {"question": "string"}, ["question"]),
 }
-TOOLS = [{"type": "function", "function": {"name": n, "description": d,
-          "parameters": {"type": "object", "properties": {k: {"type": t} for k, t in p.items()}, "required": r}}}
-         for n, (d, p, r) in TOOL_SCHEMAS.items()]
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": n,
+            "description": d,
+            "parameters": {
+                "type": "object",
+                "properties": {k: {"type": t} for k, t in p.items()},
+                "required": r,
+            },
+        },
+    }
+    for n, (d, p, r) in TOOL_SCHEMAS.items()
+]
 EDIT_TOOLS = {"edit_file", "write_file", "apply_patch"}
 TOOL_BY_NAME = {t["function"]["name"]: t for t in TOOLS}
 
 
 def tools_for(names: set[str], seed: str) -> list[dict]:
     """Tools used in the window plus two deterministic decoys (keeps selection non-trivial)."""
-    rest = sorted(set(TOOL_BY_NAME) - names, key=lambda n: hashlib.sha256((seed + n).encode()).hexdigest())
+    rest = sorted(
+        set(TOOL_BY_NAME) - names, key=lambda n: hashlib.sha256((seed + n).encode()).hexdigest()
+    )
     keep = (names & set(TOOL_BY_NAME)) | set(rest[:2])
     return [TOOL_BY_NAME[n] for n in TOOL_BY_NAME if n in keep]
-CORR_RE = re.compile(r"^(no\b|nope|not\b|that'?s (wrong|not)|wrong|don'?t|do not|stop|actually|wait|"
-                     r"i (said|asked|meant|wanted)|why (did|are) you|you (didn'?t|missed|forgot)|instead|undo|revert)", re.I)
-APOLOGY_RE = re.compile(r"^(you'?re (right|correct)|my (mistake|bad)|sorry|apologies|good catch)[^\n.!]*[.!:—-]+\s*", re.I)
-ERRLINE_RE = re.compile(r"(error|exception|traceback|failed|fatal|\[exit -?\d+\]|exit code|panic)", re.I)
+
+
+CORR_RE = re.compile(
+    r"^(no\b|nope|not\b|that'?s (wrong|not)|wrong|don'?t|do not|stop|actually|wait|"
+    r"i (said|asked|meant|wanted)|why (did|are) you|you (didn'?t|missed|forgot)|instead|undo|revert)",
+    re.I,
+)
+APOLOGY_RE = re.compile(
+    r"^(you'?re (right|correct)|my (mistake|bad)|sorry|apologies|good catch)[^\n.!]*[.!:—-]+\s*",
+    re.I,
+)
+ERRLINE_RE = re.compile(
+    r"(error|exception|traceback|failed|fatal|\[exit -?\d+\]|exit code|panic)", re.I
+)
 
 
 class Tok:
     def __init__(self, path: str):
         from transformers import AutoTokenizer
+
         self.t = AutoTokenizer.from_pretrained(path, local_files_only=True)
 
     def n(self, s: str) -> int:
@@ -87,18 +134,22 @@ class Tok:
                 break
             head.append(ln)
             used += c
-        for ln in reversed(lines[len(head):]):
+        for ln in reversed(lines[len(head) :]):
             c = self.n(ln) + 1
             if used + c > budget:
                 break
             tail.insert(0, ln)
             used += c
         mid = [x for x in err if x not in head and x not in tail]
-        return "\n".join(head + ["[... output truncated ...]"] + mid + (["[...]"] if mid else []) + tail)
+        return "\n".join(
+            head + ["[... output truncated ...]"] + mid + (["[...]"] if mid else []) + tail
+        )
 
 
-BOILER_RE = re.compile(r"\s*\(file state is current in your context[^)]*\)|"
-                       r"\s*Here's the result of running `cat -n` on a snippet of the edited file:")
+BOILER_RE = re.compile(
+    r"\s*\(file state is current in your context[^)]*\)|"
+    r"\s*Here's the result of running `cat -n` on a snippet of the edited file:"
+)
 
 
 def clean_tool_output(txt: str) -> str:
@@ -129,16 +180,45 @@ def to_msgs(step: dict, results: list[dict]) -> list[dict]:
     step = step["a"]
     a = {"role": "assistant", "content": APOLOGY_RE.sub("", step.get("content") or "")}
     if step["tool_calls"]:
-        a["tool_calls"] = [{"id": c["id"], "type": "function",
-                            "function": {"name": c["name"], "arguments": c["arguments"]}} for c in step["tool_calls"]]
-    return [a] + [{"role": "tool", "tool_call_id": r["tool_call_id"], "name": r["name"], "content": r["content"]}
-                  for r in results]
+        a["tool_calls"] = [
+            {
+                "id": c["id"],
+                "type": "function",
+                "function": {"name": c["name"], "arguments": c["arguments"]},
+            }
+            for c in step["tool_calls"]
+        ]
+    return [a] + [
+        {
+            "role": "tool",
+            "tool_call_id": r["tool_call_id"],
+            "name": r["name"],
+            "content": r["content"],
+        }
+        for r in results
+    ]
 
 
-_INTERNAL_TAGS = ("codex_internal_context", "goal_round", "goal_complete", "system-reminder", "environment_context",
-                  "user_instructions", "permissions", "turn_aborted", "task-notification", "skill_content",
-                  "local-command-stdout", "local-command-caveat", "command-name", "command-message", "command-args")
-_INTERNAL_RE = re.compile(r"<(%s)\b[^>]*>.*?(</\1>|\Z)" % "|".join(map(re.escape, _INTERNAL_TAGS)), re.S)
+_INTERNAL_TAGS = (
+    "codex_internal_context",
+    "goal_round",
+    "goal_complete",
+    "system-reminder",
+    "environment_context",
+    "user_instructions",
+    "permissions",
+    "turn_aborted",
+    "task-notification",
+    "skill_content",
+    "local-command-stdout",
+    "local-command-caveat",
+    "command-name",
+    "command-message",
+    "command-args",
+)
+_INTERNAL_RE = re.compile(
+    r"<({})\b[^>]*>.*?(</\1>|\Z)".format("|".join(map(re.escape, _INTERNAL_TAGS))), re.S
+)
 
 
 def clean_user(text: str) -> str:
@@ -175,9 +255,18 @@ def is_correction(prev: dict, nxt: dict) -> bool:
         return False
     if CORR_RE.match(txt):
         return True
-    prev_edits = {c["arguments"].get("path") for s in prev["steps"] for c in s["a"]["tool_calls"] if c["name"] in EDIT_TOOLS}
-    prev_failed = {c["arguments"].get("command") for s in prev["steps"] for c, r in zip(s["a"]["tool_calls"], s["results"])
-                   if c["name"] == "run_command" and r.get("is_error")}
+    prev_edits = {
+        c["arguments"].get("path")
+        for s in prev["steps"]
+        for c in s["a"]["tool_calls"]
+        if c["name"] in EDIT_TOOLS
+    }
+    prev_failed = {
+        c["arguments"].get("command")
+        for s in prev["steps"]
+        for c, r in zip(s["a"]["tool_calls"], s["results"], strict=False)
+        if c["name"] == "run_command" and r.get("is_error")
+    }
     for s in nxt["steps"][:4]:
         for c in s["a"]["tool_calls"]:
             if c["name"] in EDIT_TOOLS and c["arguments"].get("path") in prev_edits - {None}:
@@ -191,14 +280,19 @@ def _same(a: str, b: str) -> bool:
     return re.sub(r"\s+", " ", a).strip().lower() == re.sub(r"\s+", " ", b).strip().lower()
 
 
-def windows_for(turn: dict, prompt: str, signal: str, tok: Tok, drops: Counter) -> list[tuple[list[dict], str, int, list[dict]]]:
+def windows_for(
+    turn: dict, prompt: str, signal: str, tok: Tok, drops: Counter
+) -> list[tuple[list[dict], str, int, list[dict]]]:
     steps = []
     for s in turn["steps"]:
         if any(c["name"].startswith("UNSUPPORTED") for c in s["a"]["tool_calls"]):
             drops["skipped_unsupported_step"] += 1
             steps.append(None)  # gap: windows never span it; the next window gets a progress note
             continue
-        res = [dict(r, content=tok.truncate(clean_tool_output(r["content"]), TOOL_OUT_TOKENS)) for r in s["results"]]
+        res = [
+            dict(r, content=tok.truncate(clean_tool_output(r["content"]), TOOL_OUT_TOKENS))
+            for r in s["results"]
+        ]
         steps.append((s, res))
     if not any(steps):
         drops["turn_no_usable_steps"] += 1
@@ -219,12 +313,25 @@ def windows_for(turn: dict, prompt: str, signal: str, tok: Tok, drops: Counter) 
             # plain prose only: no call syntax the model could learn to echo into its own commands
             def _n(v: int, one: str, many: str) -> str:
                 return f"{v} {one if v == 1 else many}"
-            parts = [_n(v, one, many) for v, one, many in (
-                (done["cmds"], "shell command", "shell commands"), (done["edits"], "file edit", "file edits"),
-                (done["reads"], "file read", "file reads"), (done["other"], "other action", "other actions")) if v]
+
+            parts = [
+                _n(v, one, many)
+                for v, one, many in (
+                    (done["cmds"], "shell command", "shell commands"),
+                    (done["edits"], "file edit", "file edits"),
+                    (done["reads"], "file read", "file reads"),
+                    (done["other"], "other action", "other actions"),
+                )
+                if v
+            ]
             files = list(dict.fromkeys(done["files"]))[-4:]
-            note = ("\n\n(Earlier in this task, already done: " + ", ".join(parts) + "."
-                    + (f" Files involved: {', '.join(files)}." if files else "") + ")")
+            note = (
+                "\n\n(Earlier in this task, already done: "
+                + ", ".join(parts)
+                + "."
+                + (f" Files involved: {', '.join(files)}." if files else "")
+                + ")"
+            )
         msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt + note}]
         j, n_tok = i, None
         while j < len(steps) and steps[j] is not None:
@@ -245,11 +352,18 @@ def windows_for(turn: dict, prompt: str, signal: str, tok: Tok, drops: Counter) 
             i += 1
             continue
         shown = {m["tool_call_id"] for m in msgs if m["role"] == "tool"}
-        errs = sum(1 for _, rs in steps[i:j] for r in rs if r.get("is_error") and r["tool_call_id"] in shown)
+        errs = sum(
+            1
+            for _, rs in steps[i:j]
+            for r in rs
+            if r.get("is_error") and r["tool_call_id"] in shown
+        )
         if errs > 1:
             drops["dead_end_multi_error"] += 1
         else:
-            sig = signal if signal != "accepted" else ("error_recovery" if errs == 1 else "accepted")
+            sig = (
+                signal if signal != "accepted" else ("error_recovery" if errs == 1 else "accepted")
+            )
             out.append((msgs, sig, n_tok, wtools))
         for s, _ in steps[i:j]:
             for c in s["a"]["tool_calls"]:
@@ -264,7 +378,12 @@ def windows_for(turn: dict, prompt: str, signal: str, tok: Tok, drops: Counter) 
 
 
 def capability(msgs: list[dict], signal: str) -> str:
-    names = [c["function"]["name"] for m in msgs if m["role"] == "assistant" for c in m.get("tool_calls", [])]
+    names = [
+        c["function"]["name"]
+        for m in msgs
+        if m["role"] == "assistant"
+        for c in m.get("tool_calls", [])
+    ]
     if signal in ("correction_resolved", "error_recovery") or "ask_user" in names or not names:
         return "agentic-decisions"
     if EDIT_TOOLS & set(names):
@@ -287,7 +406,7 @@ def cap_by_project(recs: list[dict], frac: float) -> list[dict]:
             hi = mid - 1
     cap = max(10, int(frac * lo))  # floor keeps small buckets usable
     out = []
-    for p, v in by.items():
+    for _p, v in by.items():
         v = sorted(v, key=lambda r: hashlib.sha256(r["id"].encode()).hexdigest())
         out.extend(v[:cap])
     return out
@@ -309,8 +428,10 @@ def main() -> None:
     # session-level time split within each source
     eval_ids = set()
     for source in {s["source"] for s in sessions}:
-        ss = sorted((s for s in sessions if s["source"] == source), key=lambda s: s.get("started_at") or "")
-        eval_ids |= {s["session_id"] for s in ss[int(len(ss) * (1 - EVAL_FRAC)):]}
+        ss = sorted(
+            (s for s in sessions if s["source"] == source), key=lambda s: s.get("started_at") or ""
+        )
+        eval_ids |= {s["session_id"] for s in ss[int(len(ss) * (1 - EVAL_FRAC)) :]}
     recs = []
     for s in sessions:
         turns = turns_of(s)
@@ -332,12 +453,21 @@ def main() -> None:
             for w, (msgs, sig, n, wtools) in enumerate(windows_for(t, prompt, signal, tok, drops)):
                 msgs = scrub.walk(msgs, lambda x: scrub.scrub_string(x, [], rules, rescrub, {}))
                 signals[sig] += 1
-                recs.append({"id": f"{s['session_id']}:t{k:03d}:w{w}", "session_id": s["session_id"],
-                             "source": s["source"], "project": project_key(s.get("project")),
-                             "timestamp": t.get("ts") or s.get("started_at"),
-                             "split": "eval" if s["session_id"] in eval_ids else "train",
-                             "capability": capability(msgs, sig), "signal_type": sig,
-                             "tools": wtools, "messages": msgs, "tokens_qwen35": n})
+                recs.append(
+                    {
+                        "id": f"{s['session_id']}:t{k:03d}:w{w}",
+                        "session_id": s["session_id"],
+                        "source": s["source"],
+                        "project": project_key(s.get("project")),
+                        "timestamp": t.get("ts") or s.get("started_at"),
+                        "split": "eval" if s["session_id"] in eval_ids else "train",
+                        "capability": capability(msgs, sig),
+                        "signal_type": sig,
+                        "tools": wtools,
+                        "messages": msgs,
+                        "tokens_qwen35": n,
+                    }
+                )
     # dedup (train first, then drop eval items duplicating train)
     seen, deduped = set(), []
     for r in sorted(recs, key=lambda r: r["split"] != "train"):
@@ -348,9 +478,17 @@ def main() -> None:
         seen.add(k)
         deduped.append(r)
     base = out / "03-capabilities"
-    manifest = {"max_tokens": MAX_TOKENS, "tool_output_tokens": TOOL_OUT_TOKENS, "project_cap": PROJECT_CAP,
-                "eval_frac_by_session": EVAL_FRAC, "system_prompt": SYSTEM, "drops": dict(drops),
-                "signals_before_cap": dict(signals), "rescrub_hits": dict(rescrub), "capabilities": {}}
+    manifest = {
+        "max_tokens": MAX_TOKENS,
+        "tool_output_tokens": TOOL_OUT_TOKENS,
+        "project_cap": PROJECT_CAP,
+        "eval_frac_by_session": EVAL_FRAC,
+        "system_prompt": SYSTEM,
+        "drops": dict(drops),
+        "signals_before_cap": dict(signals),
+        "rescrub_hits": dict(rescrub),
+        "capabilities": {},
+    }
     rng = random.Random(0)
     for cap in ("tool-calling", "code-writing", "agentic-decisions"):
         d = base / cap
@@ -364,29 +502,42 @@ def main() -> None:
             kept[split] = capped
             with (d / f"{split}.jsonl").open("w") as fh:
                 for r in capped:
-                    fh.write(json.dumps({k: v for k, v in r.items() if k != "split"}, ensure_ascii=False) + "\n")
+                    fh.write(
+                        json.dumps({k: v for k, v in r.items() if k != "split"}, ensure_ascii=False)
+                        + "\n"
+                    )
             toks = sorted(r["tokens_qwen35"] for r in capped)
-            stats[split] = {"before_cap": len(rs), "after_cap": len(capped),
-                            "projects": dict(Counter(r["project"] for r in capped).most_common()),
-                            "sources": dict(Counter(r["source"] for r in capped)),
-                            "signals": dict(Counter(r["signal_type"] for r in capped)),
-                            "le_1400_tokens": sum(t <= 1400 for t in toks),
-                            "tokens_p50_p90_max": [toks[len(toks) // 2], toks[int(len(toks) * 0.9)], toks[-1]] if toks else []}
+            stats[split] = {
+                "before_cap": len(rs),
+                "after_cap": len(capped),
+                "projects": dict(Counter(r["project"] for r in capped).most_common()),
+                "sources": dict(Counter(r["source"] for r in capped)),
+                "signals": dict(Counter(r["signal_type"] for r in capped)),
+                "le_1400_tokens": sum(t <= 1400 for t in toks),
+                "tokens_p50_p90_max": [toks[len(toks) // 2], toks[int(len(toks) * 0.9)], toks[-1]]
+                if toks
+                else [],
+            }
         tr_s = {r["session_id"] for r in kept["train"]}
         ev_s = {r["session_id"] for r in kept["eval"]}
         tr_k = {norm_key(r) for r in kept["train"]}
         stats["overlap_sessions"] = len(tr_s & ev_s)
         stats["overlap_prompts"] = sum(norm_key(r) in tr_k for r in kept["eval"])
         # router negatives: raw first-user prompts from the other capabilities' train windows
-        others = [r for r in deduped if r["capability"] != cap and r["split"] == "train"
-                  and r["id"].endswith(":w0")]
+        others = [
+            r
+            for r in deduped
+            if r["capability"] != cap and r["split"] == "train" and r["id"].endswith(":w0")
+        ]
         rng.shuffle(others)
         negs, seen_p = [], set()
         for r in others:
             p = r["messages"][1]["content"]
             if p not in seen_p and tok.n(p) <= 500:
                 seen_p.add(p)
-                negs.append({"prompt": p, "from_capability": r["capability"], "project": r["project"]})
+                negs.append(
+                    {"prompt": p, "from_capability": r["capability"], "project": r["project"]}
+                )
             if len(negs) >= 100:
                 break
         with (d / "negative_prompts.jsonl").open("w") as fh:
@@ -411,12 +562,28 @@ def main() -> None:
             fp = Path(fname)
             pairs = sorted(set(pairs), key=lambda x: -len(x[0]))
             if fp.suffix == ".jsonl":
-                lines = [json.dumps(scrub.walk(json.loads(ln), lambda t, pr=pairs: scrub.scrub_string(
-                    t, pr, [], post, {})), ensure_ascii=False) for ln in fp.read_text().split("\n") if ln.strip()]
+                lines = [
+                    json.dumps(
+                        scrub.walk(
+                            json.loads(ln),
+                            lambda t, pr=pairs: scrub.scrub_string(t, pr, [], post, {}),
+                        ),
+                        ensure_ascii=False,
+                    )
+                    for ln in fp.read_text().split("\n")
+                    if ln.strip()
+                ]
                 fp.write_text("\n".join(lines) + "\n")
             else:
-                fp.write_text(json.dumps(scrub.walk(json.loads(fp.read_text()), lambda t, pr=pairs: scrub.scrub_string(
-                    t, pr, [], post, {})), indent=1))
+                fp.write_text(
+                    json.dumps(
+                        scrub.walk(
+                            json.loads(fp.read_text()),
+                            lambda t, pr=pairs: scrub.scrub_string(t, pr, [], post, {}),
+                        ),
+                        indent=1,
+                    )
+                )
         lit.clear()
     manifest["post_build_gitleaks_replaced"] = dict(post)
     (base / "manifest.json").write_text(json.dumps(manifest, indent=1))

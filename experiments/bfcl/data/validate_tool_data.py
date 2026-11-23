@@ -95,15 +95,22 @@ def main() -> int:
                 if mh.max_jaccard(u)[0] > 0.7:
                     hits["minhash_jaccard"] += 1
         if errs:
-            fails.append(f"{name}: {sum(errs.values())} validation errors {dict(errs.most_common(5))}")
+            fails.append(
+                f"{name}: {sum(errs.values())} validation errors {dict(errs.most_common(5))}"
+            )
         if cat_mismatch:
             fails.append(f"{name}: {cat_mismatch} category mismatches")
         if hits:
             fails.append(f"{name}: BFCL contamination hits {dict(hits)}")
-        report[name] = {"rows": len(rows), "assistant_turns": n_asst, "tool_calls_validated": n_calls,
-                        "validation_errors": sum(errs.values()), "bfcl_hits": dict(hits),
-                        "tools_sharing_only_a_name_with_bfcl": name_only,
-                        "categories": dict(sorted(Counter(r["category"] for r in rows).items()))}
+        report[name] = {
+            "rows": len(rows),
+            "assistant_turns": n_asst,
+            "tool_calls_validated": n_calls,
+            "validation_errors": sum(errs.values()),
+            "bfcl_hits": dict(hits),
+            "tools_sharing_only_a_name_with_bfcl": name_only,
+            "categories": dict(sorted(Counter(r["category"] for r in rows).items())),
+        }
 
     if "train" in splits and "dev" in splits:
         tr, dv = splits["train"], splits["dev"]
@@ -115,10 +122,19 @@ def main() -> int:
             for u in user_texts(r["messages"]):
                 tmh.add(u)
                 tng.add(u)
-        near = sum(1 for r in dv if any(tmh.max_jaccard(u)[0] > 0.7 or tng.max_overlap(u)[0] >= 0.8
-                                        for u in user_texts(r["messages"])))
-        report["train_dev_disjoint"] = {"shared_ids": len(ids), "dev_rows_sharing_train_toolset": shared_groups,
-                                        "dev_rows_near_dup_train": near}
+        near = sum(
+            1
+            for r in dv
+            if any(
+                tmh.max_jaccard(u)[0] > 0.7 or tng.max_overlap(u)[0] >= 0.8
+                for u in user_texts(r["messages"])
+            )
+        )
+        report["train_dev_disjoint"] = {
+            "shared_ids": len(ids),
+            "dev_rows_sharing_train_toolset": shared_groups,
+            "dev_rows_near_dup_train": near,
+        }
         if ids or shared_groups or near:
             fails.append(f"train/dev not disjoint: {report['train_dev_disjoint']}")
 

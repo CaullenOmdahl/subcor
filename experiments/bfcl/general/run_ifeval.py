@@ -66,7 +66,9 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     common.add_endpoint_args(ap)
     ap.add_argument("--data", type=Path, required=True, help="IFEval jsonl (google/IFEval)")
     ap.add_argument("--max-tokens", type=int, default=1280)
@@ -85,7 +87,9 @@ def main() -> int:
 
     def worker(it: dict[str, Any]) -> dict[str, Any]:
         doc = it["doc"]
-        rec = common.chat(cfg, [{"role": "user", "content": doc["prompt"]}], max_tokens=args.max_tokens)
+        rec = common.chat(
+            cfg, [{"role": "user", "content": doc["prompt"]}], max_tokens=args.max_tokens
+        )
         row: dict[str, Any] = {
             "id": it["id"],
             "task": "ifeval",
@@ -111,8 +115,13 @@ def main() -> int:
         row.update(grade(doc, rec["text"]))
         return row
 
-    print(f"IFEval: {len(items)} items -> {args.out} ({cfg.base_url}, model={cfg.model})", file=sys.stderr)
-    rows = common.run_items(items, worker, out_path=args.out, concurrency=args.concurrency, fingerprint=fp)
+    print(
+        f"IFEval: {len(items)} items -> {args.out} ({cfg.base_url}, model={cfg.model})",
+        file=sys.stderr,
+    )
+    rows = common.run_items(
+        items, worker, out_path=args.out, concurrency=args.concurrency, fingerprint=fp
+    )
     summary = {
         "task": "ifeval",
         "grader": "lm_eval.tasks.ifeval.utils.process_results (google-research IFEval port)",

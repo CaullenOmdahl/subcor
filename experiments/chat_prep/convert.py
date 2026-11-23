@@ -19,6 +19,7 @@ Usage: python convert.py <raw_root> <out_dir>
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import subprocess
@@ -27,13 +28,28 @@ from pathlib import Path
 from typing import Any
 
 CANONICAL_TOOLS = (
-    "run_command", "read_file", "edit_file", "write_file", "apply_patch",
-    "search_files", "web_search", "web_fetch", "ask_user",
+    "run_command",
+    "read_file",
+    "edit_file",
+    "write_file",
+    "apply_patch",
+    "search_files",
+    "web_search",
+    "web_fetch",
+    "ask_user",
 )
 
 USER_SKIP_PREFIXES = (
-    "<command-", "<local-command", "Caveat:", "<system-reminder", "<environment_context",
-    "<user_instructions", "# AGENTS.md", "<permissions", "<turn_aborted", "<task-notification",
+    "<command-",
+    "<local-command",
+    "Caveat:",
+    "<system-reminder",
+    "<environment_context",
+    "<user_instructions",
+    "# AGENTS.md",
+    "<permissions",
+    "<turn_aborted",
+    "<task-notification",
     "[Request interrupted",
 )
 
@@ -57,6 +73,7 @@ def _text_of(content: Any) -> str:
 
 # ---------------------------------------------------------------- Claude Code
 
+
 def _map_claude_tool(name: str, inp: dict) -> tuple[str, dict]:
     if name == "Bash":
         return "run_command", {"command": inp.get("command", "")}
@@ -67,8 +84,11 @@ def _map_claude_tool(name: str, inp: dict) -> tuple[str, dict]:
                 a[k] = inp[k]
         return "read_file", a
     if name == "Edit":
-        return "edit_file", {"path": inp.get("file_path", ""), "old_text": inp.get("old_string", ""),
-                             "new_text": inp.get("new_string", "")}
+        return "edit_file", {
+            "path": inp.get("file_path", ""),
+            "old_text": inp.get("old_string", ""),
+            "new_text": inp.get("new_string", ""),
+        }
     if name == "Write":
         return "write_file", {"path": inp.get("file_path", ""), "content": inp.get("content", "")}
     if name in ("Grep", "Glob"):
@@ -111,12 +131,19 @@ def convert_claude(path: Path) -> dict | None:
         content = m.get("content")
         if t == "user":
             cur_msg_id = None
-            if isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+            if isinstance(content, list) and any(
+                isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+            ):
                 for b in content:
                     if isinstance(b, dict) and b.get("type") == "tool_result":
-                        events.append({"role": "tool", "tool_call_id": b.get("tool_use_id"),
-                                       "content": _text_of(b.get("content")),
-                                       "is_error": bool(b.get("is_error"))})
+                        events.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": b.get("tool_use_id"),
+                                "content": _text_of(b.get("content")),
+                                "is_error": bool(b.get("is_error")),
+                            }
+                        )
                 continue
             txt = _text_of(content).strip()
             if txt.startswith("[Request interrupted"):
@@ -141,17 +168,25 @@ def convert_claude(path: Path) -> dict | None:
                 name, args = _map_claude_tool(b.get("name", ""), b.get("input") or {})
                 a["tool_calls"].append({"id": b.get("id"), "name": name, "arguments": args})
     # attach tool names to results
-    names = {c["id"]: c["name"] for e in events if e["role"] == "assistant" for c in e["tool_calls"]}
+    names = {
+        c["id"]: c["name"] for e in events if e["role"] == "assistant" for c in e["tool_calls"]
+    }
     for e in events:
         if e["role"] == "tool":
             e["name"] = names.get(e["tool_call_id"], "UNSUPPORTED:?")
     if not any(e["role"] == "user" for e in events):
         return None
-    return {"session_id": f"cc-{sid}", "source": "claude_code", "project": project,
-            "started_at": started, "events": events}
+    return {
+        "session_id": f"cc-{sid}",
+        "source": "claude_code",
+        "project": project,
+        "started_at": started,
+        "events": events,
+    }
 
 
 # ---------------------------------------------------------------- Codex
+
 
 class _JSLiteral:
     """Tiny parser for the JS object literals Codex passes to tools.<name>({...})."""
@@ -189,10 +224,10 @@ class _JSLiteral:
         while True:
             c = self.s[j]
             if c == "\\":
-                out.append(self.s[j:j + 2])
+                out.append(self.s[j : j + 2])
                 j += 2
                 continue
-            if q == "`" and c == "$" and self.s[j + 1:j + 2] == "{":
+            if q == "`" and c == "$" and self.s[j + 1 : j + 2] == "{":
                 raise ValueError("template interpolation")
             if c == q:
                 break
@@ -255,10 +290,8 @@ def _parse_exec(src: str) -> list[tuple[str, Any]] | None:
     for m in _ASSIGN_RE.finditer(src):
         p = _JSLiteral(src)
         p.i = m.end()
-        try:
+        with contextlib.suppress(Exception):
             env[m.group(1)] = p.value()
-        except Exception:
-            pass
     calls = []
     for m in _CALL_RE.finditer(src):
         p = _JSLiteral(src)
@@ -269,10 +302,7 @@ def _parse_exec(src: str) -> list[tuple[str, Any]] | None:
                 arg = {}
             else:
                 im = _IDENT_RE.match(src, p.i)
-                if im and im.group(1) in env:
-                    arg = env[im.group(1)]
-                else:
-                    arg = p.value()
+                arg = env[im.group(1)] if im and im.group(1) in env else p.value()
         except Exception:
             return None
         calls.append((m.group(1), arg))
@@ -283,7 +313,13 @@ def _map_codex_tool(name: str, arg: Any) -> tuple[str, dict]:
     if name == "exec_command" and isinstance(arg, dict):
         return "run_command", {"command": arg.get("cmd", "")}
     if name == "apply_patch":
-        patch = arg if isinstance(arg, str) else (arg.get("input") or arg.get("patch") or "") if isinstance(arg, dict) else ""
+        patch = (
+            arg
+            if isinstance(arg, str)
+            else (arg.get("input") or arg.get("patch") or "")
+            if isinstance(arg, dict)
+            else ""
+        )
         return "apply_patch", {"patch": patch}
     if name == "web__run" and isinstance(arg, dict):
         q = arg.get("search_query") or arg.get("query")
@@ -322,8 +358,9 @@ def _codex_output(raw: Any) -> tuple[str, bool]:
 
 def convert_codex(path: Path) -> dict | None:
     if path.suffix == ".zst":
-        stream = subprocess.Popen(["zstdcat", str(path)], stdout=subprocess.PIPE, text=True,
-                                  errors="ignore").stdout
+        stream = subprocess.Popen(
+            ["zstdcat", str(path)], stdout=subprocess.PIPE, text=True, errors="ignore"
+        ).stdout
     else:
         stream = path.open(errors="ignore")
     events: list[dict] = []
@@ -361,15 +398,21 @@ def convert_codex(path: Path) -> dict | None:
             name = p.get("name")
             if name == "exec":
                 parsed = _parse_exec(p.get("input") or "")
-                mapped = [_map_codex_tool(*c) for c in parsed] if parsed else [("UNSUPPORTED:exec-parse", {})]
+                mapped = (
+                    [_map_codex_tool(*c) for c in parsed]
+                    if parsed
+                    else [("UNSUPPORTED:exec-parse", {})]
+                )
             elif name == "request_user_input_async":
                 mapped = [("ask_user", {"question": str(p.get("arguments", ""))[:2000]})]
             else:
                 mapped = [(f"UNSUPPORTED:{name}", {})]
             if not events or events[-1]["role"] != "assistant":
                 events.append({"role": "assistant", "content": "", "tool_calls": []})
-            calls = [{"id": f"{cid}#{k}" if len(mapped) > 1 else cid, "name": n, "arguments": a}
-                     for k, (n, a) in enumerate(mapped)]
+            calls = [
+                {"id": f"{cid}#{k}" if len(mapped) > 1 else cid, "name": n, "arguments": a}
+                for k, (n, a) in enumerate(mapped)
+            ]
             events[-1]["tool_calls"].extend(calls)
             pending[cid] = calls
         elif pt in ("custom_tool_call_output", "function_call_output"):
@@ -377,37 +420,63 @@ def convert_codex(path: Path) -> dict | None:
             calls = pending.pop(cid, None) or [{"id": cid, "name": "UNSUPPORTED:?"}]
             raw_out = p.get("output")
             if len(calls) > 1:
-                items = [b.get("text", "") for b in raw_out if isinstance(b, dict)] if isinstance(raw_out, list) else []
+                items = (
+                    [b.get("text", "") for b in raw_out if isinstance(b, dict)]
+                    if isinstance(raw_out, list)
+                    else []
+                )
                 if items and items[0].startswith("Script completed"):
                     items = items[1:]
                 if len(items) != len(calls):
                     for c in calls:  # outputs can't be attributed per call
                         c["name"] = "UNSUPPORTED:exec-unsplittable"
                     items = ["\n".join(items)] + [""] * (len(calls) - 1)
-                for c, it in zip(calls, items):
+                for c, it in zip(calls, items, strict=False):
                     txt, err = _codex_output(it)
-                    events.append({"role": "tool", "tool_call_id": c["id"], "name": c["name"],
-                                   "content": txt, "is_error": err})
+                    events.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": c["id"],
+                            "name": c["name"],
+                            "content": txt,
+                            "is_error": err,
+                        }
+                    )
             else:
                 txt, err = _codex_output(raw_out)
-                events.append({"role": "tool", "tool_call_id": calls[0]["id"], "name": calls[0]["name"],
-                               "content": txt, "is_error": err})
+                events.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": calls[0]["id"],
+                        "name": calls[0]["name"],
+                        "content": txt,
+                        "is_error": err,
+                    }
+                )
     if not any(e["role"] == "user" for e in events):
         return None
-    return {"session_id": f"cx-{sid or path.stem}", "source": "codex", "project": project,
-            "started_at": started, "events": events}
+    return {
+        "session_id": f"cx-{sid or path.stem}",
+        "source": "codex",
+        "project": project,
+        "started_at": started,
+        "events": events,
+    }
 
 
 # ---------------------------------------------------------------- DeepSeek Harness (dsh)
 
 _DSH_EXIT_RE = re.compile(r"\[exit code: (-?\d+)\]")
-_DSH_READ_RE = re.compile(r"\A<path>[^\n]*</path>\n<type>[^\n]*</type>\n<content>\n?(.*?)(?:\n?</content>)?\s*\Z", re.S)
+_DSH_READ_RE = re.compile(
+    r"\A<path>[^\n]*</path>\n<type>[^\n]*</type>\n<content>\n?(.*?)(?:\n?</content>)?\s*\Z", re.S
+)
 
 
 def _ms_iso(ms: Any) -> str | None:
     import datetime as _dt
+
     try:
-        return _dt.datetime.fromtimestamp(int(ms) / 1000, _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        return _dt.datetime.fromtimestamp(int(ms) / 1000, _dt.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     except Exception:
         return None
 
@@ -424,8 +493,11 @@ def _map_dsh_tool(name: str, inp: dict) -> tuple[str, dict]:
                 a[k] = inp[k]
         return "read_file", a
     if name == "edit":
-        return "edit_file", {"path": inp.get("file_path", ""), "old_text": inp.get("old_string", ""),
-                             "new_text": inp.get("new_string", "")}
+        return "edit_file", {
+            "path": inp.get("file_path", ""),
+            "old_text": inp.get("old_string", ""),
+            "new_text": inp.get("new_string", ""),
+        }
     if name == "write":
         return "write_file", {"path": inp.get("file_path", ""), "content": inp.get("content", "")}
     if name in ("glob", "grep"):
@@ -435,7 +507,11 @@ def _map_dsh_tool(name: str, inp: dict) -> tuple[str, dict]:
         return "search_files", a
     if name == "web_search":
         qs = inp.get("queries") or ([inp["query"]] if inp.get("query") else [])
-        return ("web_search", {"query": str(qs[0])}) if len(qs) == 1 else ("UNSUPPORTED:web_search-multi", {})
+        return (
+            ("web_search", {"query": str(qs[0])})
+            if len(qs) == 1
+            else ("UNSUPPORTED:web_search-multi", {})
+        )
     if name == "web_fetch":
         return "web_fetch", {"url": inp.get("url", "")}
     if name == "ask_user_question":
@@ -459,7 +535,9 @@ def _dsh_output(name: str, content: Any, is_error: bool) -> tuple[str, bool]:
 
 
 def convert_dsh(path: Path) -> dict | None:
-    stream = subprocess.Popen(["zstdcat", str(path)], stdout=subprocess.PIPE, text=True, errors="ignore").stdout
+    stream = subprocess.Popen(
+        ["zstdcat", str(path)], stdout=subprocess.PIPE, text=True, errors="ignore"
+    ).stdout
     events: list[dict] = []
     sid = project = started = None
     names: dict[str, str] = {}
@@ -472,7 +550,9 @@ def convert_dsh(path: Path) -> dict | None:
         d = r.get("data") or {}
         if t == "session":
             if (r.get("delegationDepth") or 0) > 0:
-                return None  # subagent session: kept raw, not used (same policy as Claude sidechains)
+                return (
+                    None  # subagent session: kept raw, not used (same policy as Claude sidechains)
+                )
             sid, project, started = r.get("id"), r.get("cwd"), _ms_iso(r.get("createdAt"))
         elif t == "user/message":
             kind = (d.get("source") or {}).get("kind")
@@ -497,8 +577,11 @@ def convert_dsh(path: Path) -> dict | None:
                         inp = json.loads(b.get("arguments") or "{}")
                     except Exception:
                         inp = None
-                    name, args = _map_dsh_tool(b.get("name", ""), inp) if isinstance(inp, dict) else (
-                        "UNSUPPORTED:bad-args", {})
+                    name, args = (
+                        _map_dsh_tool(b.get("name", ""), inp)
+                        if isinstance(inp, dict)
+                        else ("UNSUPPORTED:bad-args", {})
+                    )
                     names[b.get("id")] = name
                     a["tool_calls"].append({"id": b.get("id"), "name": name, "arguments": args})
             if a["content"] or a["tool_calls"]:
@@ -508,15 +591,27 @@ def convert_dsh(path: Path) -> dict | None:
             cid = m.get("toolCallId")
             name = names.get(cid, "UNSUPPORTED:?")
             txt, err = _dsh_output(name, m.get("content"), bool(m.get("isError")))
-            events.append({"role": "tool", "tool_call_id": cid, "name": name, "content": txt, "is_error": err})
+            events.append(
+                {"role": "tool", "tool_call_id": cid, "name": name, "content": txt, "is_error": err}
+            )
         elif t == "turn/end":
             kind = (d.get("reason") or {}).get("kind")
             if kind in ("aborted", "interrupted", "error"):
-                events.append({"role": "break", "reason": "user_interrupt" if kind != "error" else "harness_error"})
+                events.append(
+                    {
+                        "role": "break",
+                        "reason": "user_interrupt" if kind != "error" else "harness_error",
+                    }
+                )
     if not any(e["role"] == "user" for e in events):
         return None
-    return {"session_id": f"ds-{sid or path.parent.name}", "source": "deepseek", "project": project,
-            "started_at": started, "events": events}
+    return {
+        "session_id": f"ds-{sid or path.parent.name}",
+        "source": "deepseek",
+        "project": project,
+        "started_at": started,
+        "events": events,
+    }
 
 
 def main() -> None:
@@ -545,7 +640,11 @@ def main() -> None:
         seen.add(s["session_id"])
         (out / f"{s['session_id']}.json").write_text(json.dumps(s, ensure_ascii=False))
         n["codex"] += 1
-    for f in sorted((raw / "deepseek-local").rglob("session.v4.jsonl.zstd")) if (raw / "deepseek-local").exists() else []:
+    for f in (
+        sorted((raw / "deepseek-local").rglob("session.v4.jsonl.zstd"))
+        if (raw / "deepseek-local").exists()
+        else []
+    ):
         s = convert_dsh(f)
         if s is None or s["session_id"] in seen:
             n["skipped"] += 1

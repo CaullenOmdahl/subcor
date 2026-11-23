@@ -112,7 +112,9 @@ def load_exclusions(paths: list[Path]) -> set[str]:
                         if isinstance(m, dict) and m.get("role") == "user":
                             out.add(norm(str(m.get("content", ""))))
         else:
-            out.update(norm(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip())
+            out.update(
+                norm(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()
+            )
     return out
 
 
@@ -120,12 +122,16 @@ def load_gsm8k_train(path: Path) -> list[str]:
     if path.suffix == ".parquet":
         import pyarrow.parquet as pq
 
-        return [str(q) for q in pq.read_table(path, columns=["question"]).column("question").to_pylist()]
+        return [
+            str(q) for q in pq.read_table(path, columns=["question"]).column("question").to_pylist()
+        ]
     return [r["question"] for r in common.read_jsonl(path)]
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--dolly", type=Path, required=True)
     ap.add_argument("--gsm8k-train", type=Path, required=True)
     ap.add_argument("--exclude", type=Path, action="append", default=[])
@@ -168,7 +174,15 @@ def main() -> int:
                 n_excluded += 1
                 excluded_rows["dolly"].append(i)
                 continue
-            items.append({"id": f"dolly-{i}", "source": "dolly", "category": cat, "src_index": i, "prompt": prompt})
+            items.append(
+                {
+                    "id": f"dolly-{i}",
+                    "source": "dolly",
+                    "category": cat,
+                    "src_index": i,
+                    "prompt": prompt,
+                }
+            )
             picked += 1
             if picked == PER_CATEGORY:
                 break
@@ -182,7 +196,15 @@ def main() -> int:
             n_excluded += 1
             excluded_rows["gsm8k_train"].append(i)
             continue
-        items.append({"id": f"gsm8ktrain-{i}", "source": "gsm8k_train", "category": "math", "src_index": i, "prompt": gsm[i]})
+        items.append(
+            {
+                "id": f"gsm8ktrain-{i}",
+                "source": "gsm8k_train",
+                "category": "math",
+                "src_index": i,
+                "prompt": gsm[i],
+            }
+        )
         picked += 1
         if picked == N_GSM8K:
             break
@@ -191,7 +213,15 @@ def main() -> int:
         if norm(p) in excl:
             n_excluded += 1
             continue
-        items.append({"id": f"hard-{j}", "source": "handwritten", "category": "hard_negative", "src_index": j, "prompt": p})
+        items.append(
+            {
+                "id": f"hard-{j}",
+                "source": "handwritten",
+                "category": "hard_negative",
+                "src_index": j,
+                "prompt": p,
+            }
+        )
 
     # Verify: no probe prompt (full text or instruction part) is in any excluded file.
     overlap = sorted(
@@ -218,21 +248,36 @@ def main() -> int:
                 "excluded_matches": n_excluded,
                 "exclude_files": [str(p.name) for p in args.exclude],
                 "exclude_files_sha256": {
-                    p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in args.exclude if p.exists()
+                    p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                    for p in args.exclude
+                    if p.exists()
                 },
                 "excluded_source_rows": excluded_rows,
                 "overlap_with_excluded_after_build": len(overlap),
                 "probe_sha256": hashlib.sha256(
-                    "".join(json.dumps(it, ensure_ascii=False) + "\n" for it in items).encode("utf-8")
+                    "".join(json.dumps(it, ensure_ascii=False) + "\n" for it in items).encode(
+                        "utf-8"
+                    )
                 ).hexdigest(),
                 "dolly_indices": sorted(it["src_index"] for it in items if it["source"] == "dolly"),
-                "gsm8k_train_indices": sorted(it["src_index"] for it in items if it["source"] == "gsm8k_train"),
+                "gsm8k_train_indices": sorted(
+                    it["src_index"] for it in items if it["source"] == "gsm8k_train"
+                ),
                 "prompt_sha16": [common.sha_text(it["prompt"]) for it in items],
             }
         )
         + "\n"
     )
-    print(json.dumps({"n": len(items), "counts": counts, "excluded_matches": n_excluded, "out": str(args.out)}))
+    print(
+        json.dumps(
+            {
+                "n": len(items),
+                "counts": counts,
+                "excluded_matches": n_excluded,
+                "out": str(args.out),
+            }
+        )
+    )
     return 0
 
 

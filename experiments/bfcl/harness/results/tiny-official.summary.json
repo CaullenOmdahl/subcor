@@ -1,5 +1,5 @@
 {
-  "run_dir": "/tmp/claude-1000/-home-caullen-Documents-Dev-GitHub-subcor/301b3745-882c-4027-b232-a6492d126d24/scratchpad/bfcl/harness/runs/tiny-official",
+  "run_dir": "<scratchpad>/bfcl/harness/runs/tiny-official",
   "registry": "Qwen/Qwen3.5-0.8B-FC",
   "handler": "official",
   "endpoint": {

@@ -28,10 +28,17 @@ def main() -> None:
     cfg = AutoConfig.from_pretrained(model)
     total = int(getattr(cfg, "text_config", cfg).num_hidden_layers)
     spec = os.environ.get("SUBCOR_LAYERS", "last8")
-    idx = list(range(total - int(spec[4:]), total)) if spec.startswith("last") else [int(x) for x in spec.split(",")]
-    k = TorchKernel(model, target_layer_indices=idx,
-                    target_projections=tuple(os.environ.get("SUBCOR_PROJ", "mlp.down_proj").split(",")),
-                    quantize_base_weights=os.environ.get("SUBCOR_Q4") == "1")
+    idx = (
+        list(range(total - int(spec[4:]), total))
+        if spec.startswith("last")
+        else [int(x) for x in spec.split(",")]
+    )
+    k = TorchKernel(
+        model,
+        target_layer_indices=idx,
+        target_projections=tuple(os.environ.get("SUBCOR_PROJ", "mlp.down_proj").split(",")),
+        quantize_base_weights=os.environ.get("SUBCOR_Q4") == "1",
+    )
     names = sorted(k.instrumented)
     z = np.load(npz)
     ad = {nm: LowRankAdapter(name=f"trained:{nm}", a=z[f"{nm}.a"], b=z[f"{nm}.b"]) for nm in names}
@@ -44,15 +51,24 @@ def main() -> None:
         i = next(j for j, m in enumerate(msgs) if m["role"] == "assistant")
         print("=" * 100)
         print("USER:", str(msgs[i - 1]["content"])[-300:].replace("\n", " "))
-        print("REF :", (str(msgs[i].get("content") or "")[:200] + " | calls=" + str(msgs[i].get("tool_calls"))[:300]).replace("\n", " "))
+        print(
+            "REF :",
+            (
+                str(msgs[i].get("content") or "")[:200]
+                + " | calls="
+                + str(msgs[i].get("tool_calls"))[:300]
+            ).replace("\n", " "),
+        )
         for tag in os.environ.get("SUBCOR_WHICH", "base,unit").split(","):
             if tag == "unit":
                 mount(k, ad)
             tr = k.generate_messages_with_trace(msgs[:i], tools=r["tools"], max_tokens=gen)
             if tag == "unit":
                 unmount(k, ad)
-            print(f"--- {tag.upper()} (tokens={tr.tokens_generated}, limit={tr.hit_token_limit}, "
-                  f"rep={tr.repetition_ratio:.2f}, calls={len(tr.tool_calls)})")
+            print(
+                f"--- {tag.upper()} (tokens={tr.tokens_generated}, limit={tr.hit_token_limit}, "
+                f"rep={tr.repetition_ratio:.2f}, calls={len(tr.tool_calls)})"
+            )
             print((tr.raw_response or tr.response)[:1500])
 
 

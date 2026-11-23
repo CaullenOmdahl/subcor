@@ -74,7 +74,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     kernel = LlamaCppServingAdapter(model_id=gguf.stem, supervisor=supervisor, timeout=args.timeout)
     supervisor.start()
-    out: dict = {"started": time.time(), "anchors": [list(c) for c in DEFAULT_BASELINE_ANCHOR_CASES]}
+    out: dict = {
+        "started": time.time(),
+        "anchors": [list(c) for c in DEFAULT_BASELINE_ANCHOR_CASES],
+    }
     results = []
     try:
         mgr = TenantManager(state_dir=state_dir, kernel=kernel, initial_tenants=())
@@ -83,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
             unit_id, variant = rest.rsplit(":", 1)
             ctx = mgr.get_tenant(tenant)
 
-            def score(texts: list) -> float:
+            def score(texts: list, ctx=ctx) -> float:
                 hits = 0
                 for prompt, expected in DEFAULT_BASELINE_ANCHOR_CASES:
                     res = kernel.generate_routed_chat(
@@ -96,7 +99,11 @@ def main(argv: list[str] | None = None) -> int:
                         top_k=1,
                     )
                     texts.append(
-                        {"prompt": prompt, "text": res.text, "units": list(res.routing.selected_units)}
+                        {
+                            "prompt": prompt,
+                            "text": res.text,
+                            "units": list(res.routing.selected_units),
+                        }
                     )
                     if expected.strip().lower() in res.text.strip().lower():
                         hits += 1
@@ -146,7 +153,10 @@ def main(argv: list[str] | None = None) -> int:
                 row["state_final"] = manifest.state.value
                 row["rejected_by_governance"] = True
             results.append(row)
-            print(json.dumps({k: v for k, v in row.items() if not k.startswith("anchor_")}), flush=True)
+            print(
+                json.dumps({k: v for k, v in row.items() if not k.startswith("anchor_")}),
+                flush=True,
+            )
     finally:
         supervisor.stop()
     out["results"] = results

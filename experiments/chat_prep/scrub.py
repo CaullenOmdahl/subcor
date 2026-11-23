@@ -14,6 +14,7 @@ Usage: python scrub.py <canonical_dir> <out_dir> <blocklist.tsv> <audit.jsonl>
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -25,11 +26,21 @@ from collections import Counter
 from pathlib import Path
 
 RULES: list[tuple[str, re.Pattern, str]] = [
-    ("pem_private_key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"), "<PRIVATE_KEY>"),
+    (
+        "pem_private_key",
+        re.compile(
+            r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"
+        ),
+        "<PRIVATE_KEY>",
+    ),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"), "<JWT>"),
     ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}"), "<API_KEY>"),
     ("openai_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}"), "<API_KEY>"),
-    ("github_token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})"), "<API_KEY>"),
+    (
+        "github_token",
+        re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})"),
+        "<API_KEY>",
+    ),
     ("slack_token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"), "<API_KEY>"),
     ("aws_key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "<API_KEY>"),
     ("google_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "<API_KEY>"),
@@ -37,18 +48,29 @@ RULES: list[tuple[str, re.Pattern, str]] = [
     ("gitlab_token", re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}"), "<API_KEY>"),
     ("stripe_key", re.compile(r"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}"), "<API_KEY>"),
     ("bearer", re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{16,}"), r"\1<TOKEN>"),
-    ("kv_secret", re.compile(
-        r"(?i)\b((?:api[_-]?key|access[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|"
-        r"client[_-]?secret|secret|password|passwd|pwd|token|private[_-]?key)[\"']?\s*[:=]\s*[\"']?)"
-        r"(?!<)([^\s\"',;}{)(\]\[<>]{8,})"), r"\1<SECRET>"),
+    (
+        "kv_secret",
+        re.compile(
+            r"(?i)\b((?:api[_-]?key|access[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|"
+            r"client[_-]?secret|secret|password|passwd|pwd|token|private[_-]?key)[\"']?\s*[:=]\s*[\"']?)"
+            r"(?!<)([^\s\"',;}{)(\]\[<>]{8,})"
+        ),
+        r"\1<SECRET>",
+    ),
     ("url_creds", re.compile(r"\b([a-z][a-z0-9+.-]*://)[^/\s:@\"']+:[^/\s@\"']+@"), r"\1<CREDS>@"),
     ("email", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), "<EMAIL>"),
-    ("ipv4", re.compile(r"\b(?!127\.0\.0\.1\b)(?!0\.0\.0\.0\b)(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}\b"), "<IP>"),
+    (
+        "ipv4",
+        re.compile(
+            r"\b(?!127\.0\.0\.1\b)(?!0\.0\.0\.0\b)(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}\b"
+        ),
+        "<IP>",
+    ),
     ("mac_addr", re.compile(r"\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}\b"), "<MAC>"),
     ("phone", re.compile(r"(?<![\w.])\+\d[\d \-]{8,14}\d\b"), "<PHONE>"),
-    ("home_path", re.compile(r"/(?:home|Users)/caullen\b"), "/home/user"),
-    ("username", re.compile(r"(?i)\bcaullen\b"), "user"),
-    ("surname", re.compile(r"(?i)\bomdahl\b"), "<NAME>"),
+    # Any home directory; the account name itself, and other personal names, go in the
+    # private blocklist file so they never live in the repository.
+    ("home_path", re.compile(r"/(?:home|Users)/(?!user\b)[A-Za-z0-9._-]+"), "/home/user"),
 ]
 
 
@@ -67,8 +89,23 @@ def run_gitleaks(target: Path) -> list[dict]:
     os.close(fd)
     os.chmod(rpt, 0o600)
     try:
-        subprocess.run(["gitleaks", "dir", str(target), "--report-format", "json", "--report-path", rpt,
-                        "--no-banner", "--log-level", "error", "--exit-code", "0"], check=True)
+        subprocess.run(
+            [
+                "gitleaks",
+                "dir",
+                str(target),
+                "--report-format",
+                "json",
+                "--report-path",
+                rpt,
+                "--no-banner",
+                "--log-level",
+                "error",
+                "--exit-code",
+                "0",
+            ],
+            check=True,
+        )
         return json.loads(Path(rpt).read_text() or "[]")
     finally:
         os.unlink(rpt)
@@ -78,17 +115,21 @@ def _h(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8", "ignore")).hexdigest()[:10]
 
 
-def scrub_string(s: str, literal: list[tuple[str, str]], rules, counts: Counter, hashes: dict) -> str:
+def scrub_string(
+    s: str, literal: list[tuple[str, str]], rules, counts: Counter, hashes: dict
+) -> str:
     for secret, rid in literal:
         if secret in s:
             counts[rid] += s.count(secret)
             hashes.setdefault(rid, set()).add(_h(secret))
             s = s.replace(secret, "<SECRET>")
     for rid, rx, rep in rules:
+
         def _sub(m, rid=rid, rx=rx, rep=rep):
             counts[rid] += 1
             hashes.setdefault(rid, set()).add(_h(m.group(0)))
             return m.expand(rep)
+
         s = rx.sub(_sub, s)
     return s
 
@@ -105,10 +146,8 @@ def walk(o, fn):
 
 def _secret_variants(sec: str) -> list[str]:
     out = {sec}
-    try:
+    with contextlib.suppress(Exception):
         out.add(json.loads('"' + sec + '"'))
-    except Exception:
-        pass
     return [v for v in out if len(v) >= 6]
 
 
@@ -131,11 +170,25 @@ def main() -> None:
             lit = sorted(set(per_file.get(f.name, [])), key=lambda x: -len(x[0]))
             counts: Counter = Counter()
             hashes: dict = {}
-            data = walk(json.loads(f.read_text()), lambda s: scrub_string(s, lit, rules, counts, hashes))
+            data = walk(
+                json.loads(f.read_text()),
+                lambda s, lit=lit, counts=counts, hashes=hashes: scrub_string(
+                    s, lit, rules, counts, hashes
+                ),
+            )
             (dst / f.name).write_text(json.dumps(data, ensure_ascii=False))
             for rid, n in counts.items():
-                log.write(json.dumps({"file": f.name, "rule": rid, "count": n,
-                                      "sha256_prefixes": sorted(hashes.get(rid, ()))[:20]}) + "\n")
+                log.write(
+                    json.dumps(
+                        {
+                            "file": f.name,
+                            "rule": rid,
+                            "count": n,
+                            "sha256_prefixes": sorted(hashes.get(rid, ()))[:20],
+                        }
+                    )
+                    + "\n"
+                )
             total.update(counts)
     per_file.clear()
     # ---- extra gitleaks passes: replacements can expose secrets gitleaks missed in context
@@ -147,16 +200,32 @@ def main() -> None:
             extra: dict[str, list[tuple[str, str]]] = {}
             for x in leftover:
                 for v in _secret_variants(x.get("Secret", "")):
-                    extra.setdefault(Path(x.get("File", "")).name, []).append((v, f"gitleaks2:{x.get('RuleID')}"))
+                    extra.setdefault(Path(x.get("File", "")).name, []).append(
+                        (v, f"gitleaks2:{x.get('RuleID')}")
+                    )
             leftover.clear()
             for name, lit in extra.items():
                 counts, hashes = Counter(), {}
                 p = dst / name
-                data = walk(json.loads(p.read_text()), lambda s: scrub_string(s, lit, [], counts, hashes))
+                data = walk(
+                    json.loads(p.read_text()),
+                    lambda s, lit=lit, counts=counts, hashes=hashes: scrub_string(
+                        s, lit, [], counts, hashes
+                    ),
+                )
                 p.write_text(json.dumps(data, ensure_ascii=False))
                 for rid, n in counts.items():
-                    log.write(json.dumps({"file": name, "rule": rid, "count": n,
-                                          "sha256_prefixes": sorted(hashes.get(rid, ()))[:20]}) + "\n")
+                    log.write(
+                        json.dumps(
+                            {
+                                "file": name,
+                                "rule": rid,
+                                "count": n,
+                                "sha256_prefixes": sorted(hashes.get(rid, ()))[:20],
+                            }
+                        )
+                        + "\n"
+                    )
                 total.update(counts)
     # ---- gate (on decoded strings, the same representation the scrub rewrote)
     leftover = run_gitleaks(dst)
@@ -166,19 +235,29 @@ def main() -> None:
     ok_placeholder = re.compile(r"^<[A-Z_]+>$")
 
     def _check(s: str) -> str:
-        for rid, rx, rep in rules:
+        for rid, rx, _rep in rules:
             if rid == "home_path":
                 continue
             for m in rx.finditer(s):
-                if rid in ("kv_secret", "bearer") and ok_placeholder.match(m.group(m.lastindex or 0) or ""):
+                if rid in ("kv_secret", "bearer") and ok_placeholder.match(
+                    m.group(m.lastindex or 0) or ""
+                ):
                     continue
                 rule_hits[rid] += 1
         return s
 
     for f in dst.glob("*.json"):
         walk(json.loads(f.read_text()), _check)
-    print(json.dumps({"replaced": dict(total.most_common()), "gate_gitleaks": dict(left_by_rule),
-                      "gate_rules": dict(rule_hits)}, indent=1))
+    print(
+        json.dumps(
+            {
+                "replaced": dict(total.most_common()),
+                "gate_gitleaks": dict(left_by_rule),
+                "gate_rules": dict(rule_hits),
+            },
+            indent=1,
+        )
+    )
     if left_by_rule or rule_hits:
         sys.exit("SCRUB GATE FAILED: leftover hits above")
     print("SCRUB GATE PASSED")

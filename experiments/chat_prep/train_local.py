@@ -49,14 +49,22 @@ def eval_nll(k: TorchKernel, recs: list[dict], max_seq_len: int) -> list[dict]:
     for r in recs:
         ex, _ = k._tokenize_training_example(
             {"messages": r["messages"], "tools": r["tools"]},
-            default_system_prompt=None, enable_thinking=False, max_seq_len=max_seq_len)
+            default_system_prompt=None,
+            enable_thinking=False,
+            max_seq_len=max_seq_len,
+        )
         if ex is None:
             continue
         x, y, pos, _ = ex
         h = backbone(input_ids=x, use_cache=False)[0][:, pos, :]
         logits = head(h)[0].float()
-        out.append({"id": r["id"], "nll_sum": float(F.cross_entropy(logits, y, reduction="sum")),
-                    "n_tok": int(y.shape[0])})
+        out.append(
+            {
+                "id": r["id"],
+                "nll_sum": float(F.cross_entropy(logits, y, reduction="sum")),
+                "n_tok": int(y.shape[0]),
+            }
+        )
         del h, logits
     return out
 
@@ -96,21 +104,30 @@ def next_action(k: TorchKernel, recs: list[dict], max_tokens: int = 192) -> list
             m = _FN_RE.search(tr.raw_response or tr.response)
             got_name, got_args = (m.group(1) if m else None), None
         names = {t["function"]["name"] for t in r["tools"]}
-        out.append({
-            "id": r["id"],
-            "ref_tool": ref_name, "got_tool": got_name,
-            "name_match": got_name == ref_name,
-            "valid_name": got_name is None or got_name in names,
-            "args_exact": got_name == ref_name and (ref_name is None or (
-                got_args is not None and _norm(got_args) == _norm(ref_args or {}))),
-            "args_keys": got_name == ref_name and (ref_name is None or (
-                got_args is not None and set(got_args) == set(ref_args or {}))),
-            "hit_limit": bool(tr.hit_token_limit),
-            "repetition": round(float(tr.repetition_ratio), 3),
-            # runaway output: cut off by the cap, or heavily repeated text
-            "loop": bool(tr.hit_token_limit) or float(tr.repetition_ratio) >= 0.3,
-            "n_calls": len(tr.tool_calls),
-        })
+        out.append(
+            {
+                "id": r["id"],
+                "ref_tool": ref_name,
+                "got_tool": got_name,
+                "name_match": got_name == ref_name,
+                "valid_name": got_name is None or got_name in names,
+                "args_exact": got_name == ref_name
+                and (
+                    ref_name is None
+                    or (got_args is not None and _norm(got_args) == _norm(ref_args or {}))
+                ),
+                "args_keys": got_name == ref_name
+                and (
+                    ref_name is None
+                    or (got_args is not None and set(got_args) == set(ref_args or {}))
+                ),
+                "hit_limit": bool(tr.hit_token_limit),
+                "repetition": round(float(tr.repetition_ratio), 3),
+                # runaway output: cut off by the cap, or heavily repeated text
+                "loop": bool(tr.hit_token_limit) or float(tr.repetition_ratio) >= 0.3,
+                "n_calls": len(tr.tool_calls),
+            }
+        )
     return out
 
 
@@ -133,16 +150,28 @@ def nll_compare(base: list[dict], unit: list[dict], seed: int = 0) -> dict:
     tu = sum(u["nll_sum"] for _, u in pairs) / sum(u["n_tok"] for _, u in pairs)
     rng = np.random.default_rng(seed)
     boots = [db[rng.integers(0, len(db), len(db))].mean() for _ in range(2000)]
-    return {"n": len(pairs), "base_nll": round(tb, 4), "unit_nll": round(tu, 4),
-            "mean_per_window_gain": round(float(db.mean()), 4),
-            "gain_ci95": [round(float(np.percentile(boots, 2.5)), 4), round(float(np.percentile(boots, 97.5)), 4)],
-            "windows_improved": round(float((db > 0).mean()), 3)}
+    return {
+        "n": len(pairs),
+        "base_nll": round(tb, 4),
+        "unit_nll": round(tu, 4),
+        "mean_per_window_gain": round(float(db.mean()), 4),
+        "gain_ci95": [
+            round(float(np.percentile(boots, 2.5)), 4),
+            round(float(np.percentile(boots, 97.5)), 4),
+        ],
+        "windows_improved": round(float((db > 0).mean()), 3),
+    }
 
 
 def summarize(items: list[dict]) -> dict:
     n = max(1, len(items))
-    return {"n": len(items), **{k: round(sum(x[k] for x in items) / n, 3)
-                                for k in ("name_match", "args_keys", "args_exact", "valid_name", "hit_limit", "loop")}}
+    return {
+        "n": len(items),
+        **{
+            k: round(sum(x[k] for x in items) / n, 3)
+            for k in ("name_match", "args_keys", "args_exact", "valid_name", "hit_limit", "loop")
+        },
+    }
 
 
 def mount(k: TorchKernel, adapters: dict) -> None:
@@ -159,7 +188,9 @@ def use_rep_penalty(k: TorchKernel, penalty: float) -> None:
         if cache is None:
             seen.clear()
         with torch.inference_mode():
-            out = k.model(input_ids=input_ids, past_key_values=cache, use_cache=True, **k._logits_kw(1))
+            out = k.model(
+                input_ids=input_ids, past_key_values=cache, use_cache=True, **k._logits_kw(1)
+            )
             logits = out.logits[0, -1, :].float()
             adj = logits.clone()
             if seen:
@@ -187,8 +218,17 @@ def main() -> None:
     ap.add_argument("--model", default="Qwen/Qwen3.5-0.8B")
     ap.add_argument("--steps", type=int, default=300)
     ap.add_argument("--rank", type=int, default=16)
-    ap.add_argument("--layers", type=int, default=8, help="adapt the last N layers (ignored with --layer-indices)")
-    ap.add_argument("--layer-indices", default="", help="explicit layers, e.g. 19,23,27,31 (Mac periodic_full_attn=4)")
+    ap.add_argument(
+        "--layers",
+        type=int,
+        default=8,
+        help="adapt the last N layers (ignored with --layer-indices)",
+    )
+    ap.add_argument(
+        "--layer-indices",
+        default="",
+        help="explicit layers, e.g. 19,23,27,31 (Mac periodic_full_attn=4)",
+    )
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--grad-accum", type=int, default=1)
     ap.add_argument("--max-seq-len", type=int, default=2048)
@@ -198,11 +238,25 @@ def main() -> None:
     ap.add_argument("--n-eval", type=int, default=200)
     ap.add_argument("--n-gen", type=int, default=60)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--n-cross", type=int, default=100, help="eval windows per OTHER capability (regression check)")
-    ap.add_argument("--adapters", type=Path, help="evaluate a saved adapters.npz instead of training")
+    ap.add_argument(
+        "--n-cross",
+        type=int,
+        default=100,
+        help="eval windows per OTHER capability (regression check)",
+    )
+    ap.add_argument(
+        "--adapters", type=Path, help="evaluate a saved adapters.npz instead of training"
+    )
     ap.add_argument("--tag", default="", help="suffix for the output directory")
-    ap.add_argument("--rep-penalty", type=float, default=1.0, help="decode-time repetition penalty (1.0 = plain greedy)")
-    ap.add_argument("--gen-tokens", type=int, default=192, help="generation cap for the next-action check")
+    ap.add_argument(
+        "--rep-penalty",
+        type=float,
+        default=1.0,
+        help="decode-time repetition penalty (1.0 = plain greedy)",
+    )
+    ap.add_argument(
+        "--gen-tokens", type=int, default=192, help="generation cap for the next-action check"
+    )
     a = ap.parse_args()
 
     d = a.data / a.capability
@@ -213,59 +267,102 @@ def main() -> None:
     ev_nll, ev_gen = ev[: a.n_eval], ev[: a.n_gen]
 
     from transformers import AutoConfig
+
     cfg = AutoConfig.from_pretrained(a.model)
     n_layers = int(getattr(cfg, "text_config", cfg).num_hidden_layers)
     t0 = time.perf_counter()
-    idx = ([int(x) for x in a.layer_indices.split(",")] if a.layer_indices
-           else list(range(n_layers - a.layers, n_layers)))
-    k = TorchKernel(a.model, target_layer_indices=idx,
-                    target_projections=tuple(a.projections.split(",")),
-                    quantize_base_weights=a.quantize_4bit)
+    idx = (
+        [int(x) for x in a.layer_indices.split(",")]
+        if a.layer_indices
+        else list(range(n_layers - a.layers, n_layers))
+    )
+    k = TorchKernel(
+        a.model,
+        target_layer_indices=idx,
+        target_projections=tuple(a.projections.split(",")),
+        quantize_base_weights=a.quantize_4bit,
+    )
     layer_names = sorted(k.instrumented)
     if a.rep_penalty != 1.0:
         use_rep_penalty(k, a.rep_penalty)
-    print(f"loaded {a.model} in {time.perf_counter() - t0:.0f}s; {len(layer_names)} adapted layers; "
-          f"train={len(train)} eval={len(ev)}", flush=True)
+    print(
+        f"loaded {a.model} in {time.perf_counter() - t0:.0f}s; {len(layer_names)} adapted layers; "
+        f"train={len(train)} eval={len(ev)}",
+        flush=True,
+    )
 
-    others = [c for c in ("tool-calling", "code-writing", "agentic-decisions")
-              if c != a.capability] if a.n_cross > 0 else []
+    others = (
+        [c for c in ("tool-calling", "code-writing", "agentic-decisions") if c != a.capability]
+        if a.n_cross > 0
+        else []
+    )
     cross = {}
     for c in others:
         ce = load(a.data / c / "eval.jsonl", a.max_seq_len)
         random.Random(a.seed).shuffle(ce)
         cross[c] = ce[: a.n_cross]
 
-    res: dict = {"model": a.model, "capability": a.capability, "args": {k_: str(v) for k_, v in vars(a).items()},
-                 "layers": layer_names, "n_train": len(train)}
+    res: dict = {
+        "model": a.model,
+        "capability": a.capability,
+        "args": {k_: str(v) for k_, v in vars(a).items()},
+        "layers": layer_names,
+        "n_train": len(train),
+    }
 
     def evaluate(tag: str) -> dict:
         t0 = time.perf_counter()
-        r = {"nll": eval_nll(k, ev_nll, a.max_seq_len), "next": next_action(k, ev_gen, a.gen_tokens),
-             "cross_nll": {c: eval_nll(k, v, a.max_seq_len) for c, v in cross.items()}}
-        print(f"{tag}: nll={sum(x['nll_sum'] for x in r['nll']) / sum(x['n_tok'] for x in r['nll']):.4f} "
-              f"next={summarize(r['next'])} ({time.perf_counter() - t0:.0f}s)", flush=True)
+        r = {
+            "nll": eval_nll(k, ev_nll, a.max_seq_len),
+            "next": next_action(k, ev_gen, a.gen_tokens),
+            "cross_nll": {c: eval_nll(k, v, a.max_seq_len) for c, v in cross.items()},
+        }
+        print(
+            f"{tag}: nll={sum(x['nll_sum'] for x in r['nll']) / sum(x['n_tok'] for x in r['nll']):.4f} "
+            f"next={summarize(r['next'])} ({time.perf_counter() - t0:.0f}s)",
+            flush=True,
+        )
         return r
 
     base = evaluate("base")
 
     if a.adapters:
         z = np.load(a.adapters)
-        adapters = {n: LowRankAdapter(name=f"trained:{n}", a=z[f"{n}.a"], b=z[f"{n}.b"]) for n in layer_names}
+        adapters = {
+            n: LowRankAdapter(name=f"trained:{n}", a=z[f"{n}.a"], b=z[f"{n}.b"])
+            for n in layer_names
+        }
         res["train"] = {"loaded_from": str(a.adapters)}
     else:
         t0 = time.perf_counter()
         examples = [{"messages": r["messages"], "tools": r["tools"]} for r in train]
         adapters, losses, zero = k.train_qlora_adapters(
-            examples, layer_names=layer_names, rank=a.rank, steps=a.steps, lr=a.lr,
-            grad_accum=a.grad_accum, max_seq_len=a.max_seq_len, seed=a.seed,
-            gradient_checkpointing=a.grad_ckpt)
-        res["train"] = {"seconds": round(time.perf_counter() - t0, 1), "zero_perturb": zero,
-                        "loss_first20": float(np.mean(losses[:20])), "loss_last20": float(np.mean(losses[-20:])),
-                        "losses": [round(x, 4) for x in losses], "stats": k.last_train_stats,
-                        "peak_vram_gb": round(torch.cuda.max_memory_allocated() / 2**30, 2)
-                        if torch.cuda.is_available() else None}
-        print(f"train: {res['train']['seconds']}s loss {res['train']['loss_first20']:.3f} -> "
-              f"{res['train']['loss_last20']:.3f} peak {res['train']['peak_vram_gb']} GB", flush=True)
+            examples,
+            layer_names=layer_names,
+            rank=a.rank,
+            steps=a.steps,
+            lr=a.lr,
+            grad_accum=a.grad_accum,
+            max_seq_len=a.max_seq_len,
+            seed=a.seed,
+            gradient_checkpointing=a.grad_ckpt,
+        )
+        res["train"] = {
+            "seconds": round(time.perf_counter() - t0, 1),
+            "zero_perturb": zero,
+            "loss_first20": float(np.mean(losses[:20])),
+            "loss_last20": float(np.mean(losses[-20:])),
+            "losses": [round(x, 4) for x in losses],
+            "stats": k.last_train_stats,
+            "peak_vram_gb": round(torch.cuda.max_memory_allocated() / 2**30, 2)
+            if torch.cuda.is_available()
+            else None,
+        }
+        print(
+            f"train: {res['train']['seconds']}s loss {res['train']['loss_first20']:.3f} -> "
+            f"{res['train']['loss_last20']:.3f} peak {res['train']['peak_vram_gb']} GB",
+            flush=True,
+        )
 
     mount(k, adapters)
     unit = evaluate("unit")
@@ -275,12 +372,23 @@ def main() -> None:
     pairs = [(bn[u["id"]], u) for u in unit["next"]]
     res["summary"] = {
         "nll": nll_compare(base["nll"], unit["nll"], a.seed),
-        "next_base": summarize(base["next"]), "next_unit": summarize(unit["next"]),
-        "mcnemar_name": mcnemar([b["name_match"] for b, _ in pairs], [u["name_match"] for _, u in pairs]),
-        "mcnemar_args_exact": mcnemar([b["args_exact"] for b, _ in pairs], [u["args_exact"] for _, u in pairs]),
-        "mcnemar_args_keys": mcnemar([b["args_keys"] for b, _ in pairs], [u["args_keys"] for _, u in pairs]),
-        "mcnemar_no_loop": mcnemar([not b["loop"] for b, _ in pairs], [not u["loop"] for _, u in pairs]),
-        "cross_nll": {c: nll_compare(base["cross_nll"][c], unit["cross_nll"][c], a.seed) for c in cross},
+        "next_base": summarize(base["next"]),
+        "next_unit": summarize(unit["next"]),
+        "mcnemar_name": mcnemar(
+            [b["name_match"] for b, _ in pairs], [u["name_match"] for _, u in pairs]
+        ),
+        "mcnemar_args_exact": mcnemar(
+            [b["args_exact"] for b, _ in pairs], [u["args_exact"] for _, u in pairs]
+        ),
+        "mcnemar_args_keys": mcnemar(
+            [b["args_keys"] for b, _ in pairs], [u["args_keys"] for _, u in pairs]
+        ),
+        "mcnemar_no_loop": mcnemar(
+            [not b["loop"] for b, _ in pairs], [not u["loop"] for _, u in pairs]
+        ),
+        "cross_nll": {
+            c: nll_compare(base["cross_nll"][c], unit["cross_nll"][c], a.seed) for c in cross
+        },
     }
     print("summary: " + json.dumps(res["summary"]), flush=True)
     res["items"] = {"base": base, "unit": unit}
@@ -289,9 +397,12 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     (out / "result.json").write_text(json.dumps(res, indent=1))
     if not a.adapters:
-        np.savez(out / "adapters.npz", **{f"{n}.{f}": getattr(ad, f) for n, ad in adapters.items()
-                                           for f in ("a", "b")})
+        np.savez(
+            out / "adapters.npz",
+            **{f"{n}.{f}": getattr(ad, f) for n, ad in adapters.items() for f in ("a", "b")},
+        )
     print(f"wrote {out}", flush=True)
+
 
 if __name__ == "__main__":
     main()

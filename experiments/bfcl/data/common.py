@@ -153,7 +153,9 @@ def to_openai_tool(fn: dict[str, Any]) -> dict[str, Any]:
 
 def _strip_descriptions(s: Any) -> Any:
     if isinstance(s, dict):
-        return {k: _strip_descriptions(v) for k, v in s.items() if k not in ("description", "title")}
+        return {
+            k: _strip_descriptions(v) for k, v in s.items() if k not in ("description", "title")
+        }
     if isinstance(s, list):
         return [_strip_descriptions(x) for x in s]
     return s
@@ -244,7 +246,9 @@ class MinHashLSH:
     """Deterministic MinHash over word 3-gram shingles + banded LSH; candidates are then
     scored with the EXACT Jaccard of the shingle sets (no estimation error in the verdict)."""
 
-    def __init__(self, num_perm: int = 128, bands: int = 32, shingle: int = 3, seed: int = 1) -> None:
+    def __init__(
+        self, num_perm: int = 128, bands: int = 32, shingle: int = 3, seed: int = 1
+    ) -> None:
         assert num_perm % bands == 0
         rng = np.random.RandomState(seed)
         self.a = rng.randint(1, _P, size=num_perm, dtype=np.int64).astype(np.uint64)
@@ -277,7 +281,9 @@ class MinHashLSH:
         sig = self._sig(sh)
         cands: set[int] = set()
         for bi in range(self.bands):
-            cands.update(self.tables[bi].get(sig[bi * self.rows : (bi + 1) * self.rows].tobytes(), ()))
+            cands.update(
+                self.tables[bi].get(sig[bi * self.rows : (bi + 1) * self.rows].tobytes(), ())
+            )
         best, arg = 0.0, -1
         for i in cands:
             o = self.sets[i]

@@ -42,12 +42,13 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import contextlib
+
 from common import (  # noqa: E402
     MinHashLSH,
     NgramIndex,
     est_tokens,
     name_key,
-    norm_parameters,
     sanitize_name,
     schema_key,
     signature_key,
@@ -102,7 +103,11 @@ class Conv:
         for t in tools:
             if not isinstance(t, dict):
                 raise Drop("bad_tool")
-            fn = t["function"] if t.get("type") == "function" and isinstance(t.get("function"), dict) else t
+            fn = (
+                t["function"]
+                if t.get("type") == "function" and isinstance(t.get("function"), dict)
+                else t
+            )
             if not fn.get("name"):
                 raise Drop("bad_tool")
             ot = to_openai_tool(fn)
@@ -127,7 +132,9 @@ class Conv:
             raise Drop("unanswered_calls")
         self.messages.append({"role": "user", "content": text})
 
-    def assistant(self, text: str = "", calls: list[tuple[str, dict[str, Any]]] | None = None) -> None:
+    def assistant(
+        self, text: str = "", calls: list[tuple[str, dict[str, Any]]] | None = None
+    ) -> None:
         text = (text or "").strip()
         if self.pending:
             raise Drop("unanswered_calls")
@@ -137,22 +144,43 @@ class Conv:
         if calls:
             tcs = []
             for name, args in calls:
-                san = self.raw2san.get(name) or (sanitize_name(name) if sanitize_name(name) in self.raw2san.values() else None)
+                san = self.raw2san.get(name) or (
+                    sanitize_name(name) if sanitize_name(name) in self.raw2san.values() else None
+                )
                 if san is None:
                     raise Drop("unknown_function")
                 if not isinstance(args, dict):
                     raise Drop("args_not_object")
                 self.ncall += 1
                 cid = f"call_{self.ncall}"
-                tcs.append({"id": cid, "type": "function",
-                            "function": {"name": san, "arguments": json.dumps(args, ensure_ascii=False)}})
+                tcs.append(
+                    {
+                        "id": cid,
+                        "type": "function",
+                        "function": {
+                            "name": san,
+                            "arguments": json.dumps(args, ensure_ascii=False),
+                        },
+                    }
+                )
                 self.pending.append(cid)
             msg["tool_calls"] = tcs
         # merge consecutive text assistant + call assistant (APIGen-MT style)
-        if self.messages and self.messages[-1]["role"] == "assistant" and not self.messages[-1].get("tool_calls") and calls and not text:
+        if (
+            self.messages
+            and self.messages[-1]["role"] == "assistant"
+            and not self.messages[-1].get("tool_calls")
+            and calls
+            and not text
+        ):
             self.messages[-1]["tool_calls"] = msg["tool_calls"]
             return
-        if self.messages and self.messages[-1]["role"] == "assistant" and not self.messages[-1].get("tool_calls") and not calls:
+        if (
+            self.messages
+            and self.messages[-1]["role"] == "assistant"
+            and not self.messages[-1].get("tool_calls")
+            and not calls
+        ):
             raise Drop("double_assistant_text")
         self.messages.append(msg)
 
@@ -232,7 +260,9 @@ def parse_hermes(rec: dict[str, Any]) -> dict[str, Any]:
             for r in rs:
                 try:
                     j = json.loads(r)
-                    r = json.dumps(j.get("content", j) if isinstance(j, dict) else j, ensure_ascii=False)
+                    r = json.dumps(
+                        j.get("content", j) if isinstance(j, dict) else j, ensure_ascii=False
+                    )
                 except json.JSONDecodeError:
                     pass
                 c.tool_result(r)
@@ -243,7 +273,9 @@ def parse_hermes(rec: dict[str, Any]) -> dict[str, Any]:
 
 _GL_SPLIT = re.compile(r"(USER:|ASSISTANT:|FUNCTION RESPONSE:)")
 _GL_CALL = re.compile(r"<functioncall>\s*(.*)$", re.S)
-_GL_ARGS = re.compile(r'^\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*\'(.*)\'\s*\}\s*$', re.S)
+_GL_ARGS = re.compile(
+    r'^\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*\'(.*)\'\s*\}\s*$', re.S
+)
 
 
 def _json_objects(s: str) -> list[Any]:
@@ -271,7 +303,7 @@ def parse_glaive(rec: dict[str, Any]) -> dict[str, Any]:
     parts = _GL_SPLIT.split(rec["chat"])
     if parts[0].strip():
         raise Drop("odd_format")
-    for tag, body in zip(parts[1::2], parts[2::2]):
+    for tag, body in zip(parts[1::2], parts[2::2], strict=False):
         body = body.replace("<|endoftext|>", "").strip()
         if tag == "USER:":
             c.user(body)
@@ -297,10 +329,8 @@ def parse_glaive(rec: dict[str, Any]) -> dict[str, Any]:
         else:
             if not c.pending:
                 raise Drop("orphan_tool_result")
-            try:
+            with contextlib.suppress(json.JSONDecodeError):
                 body = json.dumps(json.loads(body), ensure_ascii=False)
-            except json.JSONDecodeError:
-                pass
             c.tool_result(body)
     return c.finish()
 
@@ -314,7 +344,7 @@ def _pyval(node: ast.AST) -> Any:
     if isinstance(node, (ast.List, ast.Tuple)):
         return [_pyval(e) for e in node.elts]
     if isinstance(node, ast.Dict):
-        return {_pyval(k): _pyval(v) for k, v in zip(node.keys, node.values)}
+        return {_pyval(k): _pyval(v) for k, v in zip(node.keys, node.values, strict=False)}
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
         v = _pyval(node.operand)
         if isinstance(v, (int, float)):
@@ -410,7 +440,11 @@ def parse_apigenmt(rec: dict[str, Any]) -> dict[str, Any]:
         if f == "human":
             c.user(v)
         elif f == "gpt":
-            if c.messages and c.messages[-1]["role"] == "assistant" and not c.messages[-1].get("tool_calls"):
+            if (
+                c.messages
+                and c.messages[-1]["role"] == "assistant"
+                and not c.messages[-1].get("tool_calls")
+            ):
                 c.messages[-1]["content"] += "\n\n" + v.strip()
             else:
                 c.assistant(v)
@@ -422,7 +456,13 @@ def parse_apigenmt(rec: dict[str, Any]) -> dict[str, Any]:
             args = j.get("arguments", {})
             if isinstance(args, str):
                 args = _loose_json(args) if args.strip() else {}
-            if c.messages and c.messages[-1]["role"] == "assistant" and c.messages[-1].get("tool_calls") and c.pending and not any(m["role"] == "tool" for m in c.messages[-1:]):
+            if (
+                c.messages
+                and c.messages[-1]["role"] == "assistant"
+                and c.messages[-1].get("tool_calls")
+                and c.pending
+                and not any(m["role"] == "tool" for m in c.messages[-1:])
+            ):
                 # consecutive function_call turns -> parallel calls in one assistant message
                 saved = c.pending
                 c.pending = []
@@ -467,10 +507,14 @@ def truncate_to_fit(row: dict[str, Any], cap: int) -> dict[str, Any] | None:
 _REFUSE = re.compile(
     r"\b(sorry|unable|can't|cannot|can not|don't have|do not have|not able|no (available )?function|"
     r"none of the (provided |available )?functions|outside|beyond|limited to|not (currently )?possible|"
-    r"capabilit|not equipped|doesn't (allow|support)|does not (allow|support))", re.I)
+    r"capabilit|not equipped|doesn't (allow|support)|does not (allow|support))",
+    re.I,
+)
 _ASK = re.compile(
     r"\b(provide|specify|could you (please )?(tell|give|share|let me know)|can you (please )?(tell|give|share)|"
-    r"what (is|are|would|should)|which|need (the|some|more|a few|to know)|missing|please (tell|share|let me know))", re.I)
+    r"what (is|are|would|should)|which|need (the|some|more|a few|to know)|missing|please (tell|share|let me know))",
+    re.I,
+)
 
 
 def categorize(row: dict[str, Any]) -> str:
@@ -519,7 +563,9 @@ def load_bfcl(data_dir: Path) -> tuple[list[str], list[dict[str, Any]], dict[str
                 if isinstance(m, dict) and m.get("role") == "user" and m.get("content"):
                     prompts.append(str(m["content"]))
 
-    files = sorted(data_dir.glob("BFCL_v4_*.json")) + sorted((data_dir / "memory_prereq_conversation").glob("*.json"))
+    files = sorted(data_dir.glob("BFCL_v4_*.json")) + sorted(
+        (data_dir / "memory_prereq_conversation").glob("*.json")
+    )
     files += sorted((data_dir / "unused_datasets" / "question").glob("*.json"))
     for f in files:
         if f.name == "BFCL_v4_format_sensitivity.json":
@@ -533,7 +579,11 @@ def load_bfcl(data_dir: Path) -> tuple[list[str], list[dict[str, Any]], dict[str
             for fn in it.get("function") or []:
                 if isinstance(fn, dict):
                     funcs.append(fn)
-            for fn in it.get("missed_function", {}).values() if isinstance(it.get("missed_function"), dict) else []:
+            for fn in (
+                it.get("missed_function", {}).values()
+                if isinstance(it.get("missed_function"), dict)
+                else []
+            ):
                 funcs.extend(x for x in fn if isinstance(x, dict))
     for f in sorted((data_dir / "multi_turn_func_doc").glob("*.json")):
         for line in f.read_text(encoding="utf-8").splitlines():
@@ -554,12 +604,18 @@ def _norm_prompt(t: str) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    ap.add_argument("--raw", type=Path, required=True, help="dir with hermes/ glaive/ toolace/ apigenmt/")
-    ap.add_argument("--bfcl-data", type=Path, required=True, help="bfcl_eval/data dir from the package")
+    ap.add_argument(
+        "--raw", type=Path, required=True, help="dir with hermes/ glaive/ toolace/ apigenmt/"
+    )
+    ap.add_argument(
+        "--bfcl-data", type=Path, required=True, help="bfcl_eval/data dir from the package"
+    )
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--seed", type=int, default=20261121)
     ap.add_argument("--dev-frac", type=float, default=0.1)
-    ap.add_argument("--glaive-limit", type=int, default=40000, help="first N glaive records screened")
+    ap.add_argument(
+        "--glaive-limit", type=int, default=40000, help="first N glaive records screened"
+    )
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     rng = random.Random(args.seed)
@@ -575,7 +631,10 @@ def main() -> None:
     for p in bprompts:
         ng.add(p)
         mh.add(p)
-    print(f"BFCL: {len(bprompts)} prompts, {len(bfuncs)} functions ({len(b_schema)} unique schemas)", flush=True)
+    print(
+        f"BFCL: {len(bprompts)} prompts, {len(bfuncs)} functions ({len(b_schema)} unique schemas)",
+        flush=True,
+    )
 
     # ---- parse sources
     parsed: list[dict[str, Any]] = []
@@ -596,7 +655,11 @@ def main() -> None:
                 continue
             errs = check_conversation(row)
             if errs:
-                parse_drops[src]["schema_invalid" if any("fail schema" in e or "invalid schema" in e for e in errs) else "structure_invalid"] += 1
+                parse_drops[src][
+                    "schema_invalid"
+                    if any("fail schema" in e or "invalid schema" in e for e in errs)
+                    else "structure_invalid"
+                ] += 1
                 continue
             row2 = truncate_to_fit(row, cap)
             if row2 is None:
@@ -609,10 +672,25 @@ def main() -> None:
             parsed.append(row2)
 
     raw = args.raw
-    ingest("hermes", json.loads((raw / "hermes/func-calling-singleturn.json").read_text()), parse_hermes, "hermes-st")
-    ingest("hermes", json.loads((raw / "hermes/func-calling.json").read_text()), parse_hermes, "hermes-mt")
+    ingest(
+        "hermes",
+        json.loads((raw / "hermes/func-calling-singleturn.json").read_text()),
+        parse_hermes,
+        "hermes-st",
+    )
+    ingest(
+        "hermes",
+        json.loads((raw / "hermes/func-calling.json").read_text()),
+        parse_hermes,
+        "hermes-mt",
+    )
     ingest("toolace", json.loads((raw / "toolace/data.json").read_text()), parse_toolace, "toolace")
-    ingest("apigenmt", json.loads((raw / "apigenmt/apigen-mt_5k.json").read_text()), parse_apigenmt, "apigenmt")
+    ingest(
+        "apigenmt",
+        json.loads((raw / "apigenmt/apigen-mt_5k.json").read_text()),
+        parse_apigenmt,
+        "apigenmt",
+    )
     gl = json.loads((raw / "glaive/glaive-function-calling-v2.json").read_text())
     gl_idx = list(range(len(gl)))
     random.Random(args.seed).shuffle(gl_idx)
@@ -645,16 +723,25 @@ def main() -> None:
                     break
                 ov, bi = ng.max_overlap(u)
                 if ov >= 0.8:
-                    rule, detail = "ngram13_overlap", {"train": u[:200], "bfcl": bprompts[bi][:200], "overlap": round(ov, 3)}
+                    rule, detail = (
+                        "ngram13_overlap",
+                        {"train": u[:200], "bfcl": bprompts[bi][:200], "overlap": round(ov, 3)},
+                    )
                     break
                 jac, bi = mh.max_jaccard(u)
                 if jac > 0.7:
-                    rule, detail = "minhash_jaccard", {"train": u[:200], "bfcl": bprompts[bi][:200], "jaccard": round(jac, 3)}
+                    rule, detail = (
+                        "minhash_jaccard",
+                        {"train": u[:200], "bfcl": bprompts[bi][:200], "jaccard": round(jac, 3)},
+                    )
                     break
         if rule is not None:
             removed[rule] += 1
             removed_by_src[row["source"]][rule] += 1
-            removal_log.write(json.dumps({"id": row["id"], "rule": rule, "detail": detail}, ensure_ascii=False) + "\n")
+            removal_log.write(
+                json.dumps({"id": row["id"], "rule": rule, "detail": detail}, ensure_ascii=False)
+                + "\n"
+            )
             continue
         key = _norm_prompt(" || ".join(user_texts(row["messages"])))
         if key in seen_prompt:
@@ -685,8 +772,15 @@ def main() -> None:
         msgs = r["messages"]
         first_call = next(i for i, m in enumerate(msgs) if m.get("tool_calls"))
         k = max(i for i in range(first_call) if msgs[i]["role"] == "assistant")
-        by_cat["clarify"].append({**r, "id": r["id"] + "-clarify", "messages": msgs[: k + 1], "category": "clarify",
-                                  "derived_from": "multi_turn_clarify"})
+        by_cat["clarify"].append(
+            {
+                **r,
+                "id": r["id"] + "-clarify",
+                "messages": msgs[: k + 1],
+                "category": "clarify",
+                "derived_from": "multi_turn_clarify",
+            }
+        )
         derived += 1
     by_cat["multi_turn_clarify"] = mtc
     avail = {c: Counter(r["source"] for r in rs) for c, rs in by_cat.items()}
@@ -712,11 +806,8 @@ def main() -> None:
         return ",".join(sorted(t["function"]["name"].lower() for t in r["tools"]))
 
     def is_dev(r: dict[str, Any]) -> bool:
-        if r["source"] == SOURCES["apigenmt"]["hf"]:
-            # 2 shared tool sets (airline/retail): split by conversation instead
-            g = r["id"]
-        else:
-            g = group(r)
+        # 2 shared tool sets (airline/retail): split by conversation instead
+        g = r["id"] if r["source"] == SOURCES["apigenmt"]["hf"] else group(r)
         h = int.from_bytes(hashlib.sha256(f"{args.seed}:{g}".encode()).digest()[:4], "big")
         return (h % 1000) < args.dev_frac * 1000
 
@@ -731,7 +822,10 @@ def main() -> None:
     dev_clean, dev_drop = [], 0
     train_groups = {group(r) for r in train if r["source"] != SOURCES["apigenmt"]["hf"]}
     for r in dev:
-        bad = any(tr_mh.max_jaccard(u)[0] > 0.7 or tr_ng.max_overlap(u)[0] >= 0.8 for u in user_texts(r["messages"]))
+        bad = any(
+            tr_mh.max_jaccard(u)[0] > 0.7 or tr_ng.max_overlap(u)[0] >= 0.8
+            for u in user_texts(r["messages"])
+        )
         if bad:
             dev_drop += 1
             continue
@@ -744,9 +838,16 @@ def main() -> None:
     def write(path: Path, rows: list[dict[str, Any]]) -> None:
         with path.open("w", encoding="utf-8") as fh:
             for r in rows:
-                out = {"id": r["id"], "category": r["category"], "source": r["source"], "license": r["license"],
-                       "est_tokens": est_tokens(r), "truncated": bool(r.get("truncated")),
-                       "tools": r["tools"], "messages": r["messages"]}
+                out = {
+                    "id": r["id"],
+                    "category": r["category"],
+                    "source": r["source"],
+                    "license": r["license"],
+                    "est_tokens": est_tokens(r),
+                    "truncated": bool(r.get("truncated")),
+                    "tools": r["tools"],
+                    "messages": r["messages"],
+                }
                 fh.write(json.dumps(out, ensure_ascii=False) + "\n")
 
     write(args.out / "train.jsonl", train)
@@ -763,8 +864,12 @@ def main() -> None:
             "total": len(rows),
             "by_category": dict(sorted(Counter(r["category"] for r in rows).items())),
             "by_source": dict(sorted(Counter(r["source"] for r in rows).items())),
-            "by_category_source": {c: dict(Counter(r["source"] for r in rows if r["category"] == c)) for c in QUOTAS},
-            "assistant_turns": sum(1 for r in rows for m in r["messages"] if m["role"] == "assistant"),
+            "by_category_source": {
+                c: dict(Counter(r["source"] for r in rows if r["category"] == c)) for c in QUOTAS
+            },
+            "assistant_turns": sum(
+                1 for r in rows for m in r["messages"] if m["role"] == "assistant"
+            ),
             "tool_calls": sum(len(m.get("tool_calls") or []) for r in rows for m in r["messages"]),
             "truncated": sum(1 for r in rows if r.get("truncated")),
             "est_tokens_max": max((est_tokens(r) for r in rows), default=0),
@@ -774,8 +879,12 @@ def main() -> None:
         "seed": args.seed,
         "sources": SOURCES,
         "skipped_sources": SKIPPED,
-        "bfcl_index": {"prompts": len(bprompts), "functions": len(bfuncs), "unique_schemas": len(b_schema),
-                       "files": bstats},
+        "bfcl_index": {
+            "prompts": len(bprompts),
+            "functions": len(bfuncs),
+            "unique_schemas": len(b_schema),
+            "files": bstats,
+        },
         "raw_records_screened": dict(seen_raw),
         "parse_drops": {k: dict(v) for k, v in parse_drops.items()},
         "parsed_valid": len(parsed),
@@ -791,7 +900,11 @@ def main() -> None:
         "train_long": counts(long_rows),
     }
     (args.out / "build_stats.json").write_text(json.dumps(stats, indent=2))
-    print(json.dumps({"train": stats["train"]["by_category"], "dev": stats["dev"]["by_category"]}, indent=1))
+    print(
+        json.dumps(
+            {"train": stats["train"]["by_category"], "dev": stats["dev"]["by_category"]}, indent=1
+        )
+    )
 
 
 if __name__ == "__main__":

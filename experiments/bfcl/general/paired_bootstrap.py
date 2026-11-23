@@ -39,7 +39,9 @@ def value(row: dict[str, Any], metric: str) -> float:
     return float(v)
 
 
-def paired_bootstrap(a: list[float], b: list[float], *, n_boot: int = 10000, seed: int = 0) -> dict[str, Any]:
+def paired_bootstrap(
+    a: list[float], b: list[float], *, n_boot: int = 10000, seed: int = 0
+) -> dict[str, Any]:
     n = len(a)
     diffs = [y - x for x, y in zip(a, b, strict=True)]
     obs = sum(diffs) / n
@@ -68,7 +70,9 @@ def paired_bootstrap(a: list[float], b: list[float], *, n_boot: int = 10000, see
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("a", type=Path)
     ap.add_argument("b", type=Path)
     ap.add_argument("--metric", default=None)
@@ -98,10 +102,15 @@ def main() -> int:
     }
     if any(unmatched.values()) and not args.allow_unmatched:
         # An arm whose failed requests are silently dropped is not paired on the same items.
-        raise SystemExit(f"arms are not paired on the same ok items {unmatched}; rerun the "
-                         "failed items (the runners resume) or pass --allow-unmatched")
+        raise SystemExit(
+            f"arms are not paired on the same ok items {unmatched}; rerun the "
+            "failed items (the runners resume) or pass --allow-unmatched"
+        )
     res = paired_bootstrap(
-        [value(ra[i], metric) for i in ids], [value(rb[i], metric) for i in ids], n_boot=args.n_boot, seed=args.seed
+        [value(ra[i], metric) for i in ids],
+        [value(rb[i], metric) for i in ids],
+        n_boot=args.n_boot,
+        seed=args.seed,
     )
     res.update(
         {

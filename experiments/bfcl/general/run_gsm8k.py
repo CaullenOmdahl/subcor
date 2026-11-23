@@ -82,11 +82,15 @@ def extract(response: str) -> tuple[str | None, str | None]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     common.add_endpoint_args(ap)
     ap.add_argument("--data", type=Path, required=True, help="GSM8K main/test jsonl (1319 rows)")
     ap.add_argument("--max-tokens", type=int, default=1024)
-    ap.add_argument("--write-subset", action="store_true", help="(re)write the frozen index file and exit")
+    ap.add_argument(
+        "--write-subset", action="store_true", help="(re)write the frozen index file and exit"
+    )
     args = ap.parse_args()
 
     cfg = common.config_from_args(args)
@@ -159,8 +163,13 @@ def main() -> int:
         )
         return row
 
-    print(f"GSM8K: {len(items)} items -> {args.out} ({cfg.base_url}, model={cfg.model})", file=sys.stderr)
-    rows = common.run_items(items, worker, out_path=args.out, concurrency=args.concurrency, fingerprint=fp)
+    print(
+        f"GSM8K: {len(items)} items -> {args.out} ({cfg.base_url}, model={cfg.model})",
+        file=sys.stderr,
+    )
+    rows = common.run_items(
+        items, worker, out_path=args.out, concurrency=args.concurrency, fingerprint=fp
+    )
     ok = [r for r in rows if r.get("ok")]
     n = max(len(ok), 1)
     summary = {
